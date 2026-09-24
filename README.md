@@ -25,7 +25,7 @@ Root и админ панели не нужны.
 ## Установка
 
 ```
-/plugin marketplace add <путь-или-git-url этого репозитория>
+/plugin marketplace add https://github.com/vjachet/fastpanel-plugin
 /plugin install fastpanel@fastpanel
 ```
 

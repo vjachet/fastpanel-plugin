@@ -18,7 +18,7 @@ mkdir -p ~/plugins && tar xzf fastpanel-plugin-2.0.0.tar.gz -C ~/plugins
 **Из git:**
 
 ```bash
-git clone <url-репозитория> ~/plugins/fastpanel-plugin
+git clone https://github.com/vjachet/fastpanel-plugin.git ~/plugins/fastpanel-plugin
 ```
 
 ## 2. Подключить в Claude Code
@@ -30,8 +30,12 @@ git clone <url-репозитория> ~/plugins/fastpanel-plugin
 /plugin install fastpanel@fastpanel
 ```
 
-Вместо локального пути в первой команде можно указать git-url репозитория — тогда шаг 1
-не нужен.
+Шаг 1 можно пропустить — вместо локального пути укажи адрес репозитория:
+
+```
+/plugin marketplace add https://github.com/vjachet/fastpanel-plugin
+/plugin install fastpanel@fastpanel
+```
 
 Проверить, что скиллы видны: `/plugin` → в списке должны быть `fastpanel-accounts`,
 `fastpanel-sites`, `fastpanel-db`.
