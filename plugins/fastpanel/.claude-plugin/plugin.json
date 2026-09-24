@@ -1,0 +1,9 @@
+{
+  "name": "fastpanel",
+  "description": "Tools for working with a FastPanel/FluxPanel server from an agent: accounts, sites, databases. Everything runs as an ordinary panel user — no root, no panel admin — and the panel password never leaves the local 0600 credentials file",
+  "version": "2.0.0",
+  "author": {
+    "name": "viachet"
+  },
+  "keywords": ["fastpanel", "fluxpanel", "hosting", "database", "mysql", "postgresql", "sites"]
+}

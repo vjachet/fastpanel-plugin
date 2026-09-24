@@ -1,0 +1,15 @@
+{
+  "name": "fastpanel",
+  "description": "FastPanel/FluxPanel tooling for Claude Code",
+  "owner": {
+    "name": "viachet"
+  },
+  "plugins": [
+    {
+      "name": "fastpanel",
+      "source": "./plugins/fastpanel",
+      "description": "Work with a FastPanel/FluxPanel server from an agent as an ordinary panel user: list accounts and sites, create databases idempotently. The panel password stays in a local 0600 file and never reaches the model.",
+      "category": "hosting"
+    }
+  ]
+}
