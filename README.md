@@ -29,7 +29,12 @@ Root и админ панели не нужны.
 /plugin install fastpanel@fastpanel
 ```
 
-Нужен `python3` (3.8+). Внешних зависимостей нет.
+Нужен `python3` (3.8+). Внешних зависимостей нет. Подробный порядок установки, настройки
+и проверки — в [INSTALL.md](INSTALL.md). Сборка архива для передачи:
+
+```bash
+git archive --format=tar.gz --prefix=fastpanel-plugin/ -o dist/fastpanel-plugin-2.0.0.tar.gz HEAD
+```
 
 ## Настройка доступов
 
