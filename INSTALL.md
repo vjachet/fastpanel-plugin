@@ -10,8 +10,8 @@
 **Из архива:**
 
 ```bash
-sha256sum -c fastpanel-plugin-2.1.0.tar.gz.sha256   # если прислали файл с суммой
-mkdir -p ~/plugins && tar xzf fastpanel-plugin-2.1.0.tar.gz -C ~/plugins
+sha256sum -c fastpanel-plugin-2.2.0.tar.gz.sha256   # если прислали файл с суммой
+mkdir -p ~/plugins && tar xzf fastpanel-plugin-2.2.0.tar.gz -C ~/plugins
 # получится ~/plugins/fastpanel-plugin
 ```
 

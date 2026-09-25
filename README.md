@@ -9,7 +9,7 @@ Root и админ панели не нужны.
 | Скилл | Что умеет |
 |---|---|
 | `fastpanel-accounts` | какие аккаунты панели настроены; кто мы на панели (user id, home, владелец, квота) |
-| `fastpanel-sites` | список сайтов с их id; подробности одного сайта; создание сайта (PHP модулем Apache или FastCGI с выбором версии, статика или обратный прокси для Node.js) с выбором IP, сжатия, кеша статики и логов, с сертификатом Let's Encrypt; довыпуск сертификата, когда DNS готов |
+| `fastpanel-sites` | список сайтов с их id; подробности одного сайта; создание сайта (PHP модулем Apache или FastCGI с выбором версии, статика или обратный прокси для Node.js) с выбором IP, сжатия, кеша статики и логов, с сертификатом Let's Encrypt; смена обработчика и версии PHP; довыпуск сертификата, когда DNS готов |
 | `fastpanel-db` | список баз; серверы БД и кодировки; идемпотентное создание базы с пользователем и привязкой к сайту |
 
 Общее ядро — `plugins/fastpanel/lib/fastpanel_api.py`: конфиг, логин, кеш токена, разбор
@@ -33,7 +33,7 @@ Root и админ панели не нужны.
 и проверки — в [INSTALL.md](INSTALL.md). Сборка архива для передачи:
 
 ```bash
-git archive --format=tar.gz --prefix=fastpanel-plugin/ -o dist/fastpanel-plugin-2.1.0.tar.gz HEAD
+git archive --format=tar.gz --prefix=fastpanel-plugin/ -o dist/fastpanel-plugin-2.2.0.tar.gz HEAD
 ```
 
 ## Настройка доступов
@@ -83,6 +83,7 @@ python3 $P/fastpanel-accounts/scripts/fastpanel_accounts.py whoami -A work
 python3 $P/fastpanel-sites/scripts/fastpanel_sites.py list -A work
 python3 $P/fastpanel-sites/scripts/fastpanel_sites.py options -A work
 python3 $P/fastpanel-sites/scripts/fastpanel_sites.py add shop.example.com -A work --handler fcgi --php 74
+python3 $P/fastpanel-sites/scripts/fastpanel_sites.py backend shop.example.com -A work --handler fcgi --php 82
 python3 $P/fastpanel-sites/scripts/fastpanel_sites.py ssl shop.example.com -A work
 python3 $P/fastpanel-db/scripts/fastpanel_db.py servers -A work
 python3 $P/fastpanel-db/scripts/fastpanel_db.py add shop_main -A work --site shop.example.com
@@ -143,7 +144,7 @@ plugins/fastpanel/
 `GET /api/databases?offset=&limit=`, `POST /api/databases`, `GET /api/databases/servers`,
 `GET /api/databases/servers/<id>/users`, `GET /api/sites/list?filter[...]`,
 `GET /api/sites/simple`, `GET /api/sites/<id>`, `GET /api/me`, `GET /api/settings`
-(версии PHP и IP), `POST /api/master/domain`, `PUT /api/master` (создание сайта), `PUT /api/sites/backend/<id>` (бэкенд),
+(версии PHP и IP), `POST /api/master/domain`, `PUT /api/master` (создание сайта), `GET|PUT /api/sites/backend/<id>` (бэкенд),
 `PUT /api/sites/<id>` (сжатие, кеш статики, HTTPS), `GET|PUT /api/sites/<id>/log_rotate`,
 `POST /api/certificates`, `GET /api/certificates/<id>`.
 Эндпоинтов `/api/users/me`, `/api/current_user` и `/api/sites` нет.

@@ -426,6 +426,92 @@ def cmd_ssl(args):
     return 0 if line.startswith("issued for") else 1
 
 
+def read_backend(panel, site_id):
+    status, data = panel.call("GET", "/sites/backend/%s" % site_id)
+    backend = data.get("data") if status == 200 and isinstance(data, dict) else None
+    if not isinstance(backend, dict):
+        fp.die("cannot read the backend of site %s (HTTP %s): %s"
+               % (site_id, status, fp.panel_error(data)))
+    return backend
+
+
+def put_backend(panel, site, current, change):
+    """PUT /sites/backend/<id> with the panel's "backend" form payload."""
+    body = {
+        "index_dir": site.get("index_dir"),
+        "manual_changes": False,
+        "type": current.get("type"),
+        "handler": current.get("handler"),
+        "port": current.get("port"),
+        "socket_path": current.get("socket_path"),
+    }
+    body.update(change)
+    if body["type"] == "php":
+        body.setdefault("app_file", current.get("app_file") or "index.php index.html")
+        body.setdefault("environment", current.get("environment") or [""])
+        body.setdefault("work_dir", current.get("work_dir") or "")
+    return panel.call("PUT", "/sites/backend/%s" % site["id"], body)
+
+
+def cmd_backend(args):
+    """Switch an existing site's php handler and/or version."""
+    domain = args.domain.strip().lower().rstrip(".")
+    panel = fp.panel_for(args)
+    site_id = fp.find_site_id(panel, domain)
+    site = wait_for_site(panel, domain, site_id)
+    current = read_backend(panel, site_id)
+    cur_type = current.get("type")
+    cur_handler, cur_php = current.get("handler"), str(current.get("handler_version") or "")
+    now = "%s, %s" % (php_label(cur_php), cur_handler) if cur_type == "php" else cur_type
+    print("now:     %s" % now, file=sys.stderr)
+
+    versions = php_versions(panel_settings(panel))
+    by_version = {v: h for v, h, _ in versions}
+    dv = default_version(versions)
+    interactive = sys.stdin.isatty() and not args.no_prompt
+    if not args.handler and not args.php:
+        if not interactive:
+            fp.die("say what to switch to: --handler and/or --php")
+        itk = dv if "mpm_itk" in by_version.get(dv, []) else None
+        options = [("mpm_itk", "Apache module (mpm_itk), %s" % php_label(itk))] if itk else []
+        options.append(("fcgi", "FastCGI (fcgi), choose the version"))
+        args.handler = pick("PHP mode:", options, options[0][0])
+        if args.handler == "mpm_itk":
+            args.php = itk
+    # Whatever is not asked for stays as it is, when the new pair allows it.
+    if not args.php and cur_type == "php" and args.handler in by_version.get(cur_php, []):
+        args.php = cur_php
+    if not args.handler and cur_type == "php" and cur_handler in by_version.get(
+            (args.php or "").replace(".", ""), []):
+        args.handler = cur_handler
+    resolve_php(args, versions, by_version, dv, interactive)
+
+    if cur_type == "php" and (args.handler, args.php) == (cur_handler, cur_php):
+        print("unchanged: %s already runs %s — nothing changed" % (site.get("domain"), now))
+        return 0
+    status, data = put_backend(panel, site, current, {
+        "type": "php", "handler": args.handler, "handler_version": args.php})
+    if status >= 300:
+        fp.die("switching %s failed (HTTP %s): %s"
+               % (site.get("domain"), status, fp.panel_error(data)))
+    # The switch is queued and the site's action flag shows up late: wait for the
+    # backend itself to report the new pair.
+    deadline = time.time() + 180
+    while True:
+        after = read_backend(panel, site_id)
+        if (after.get("handler"), str(after.get("handler_version") or "")) == (
+                args.handler, args.php) and not after.get("action"):
+            break
+        if time.time() > deadline:
+            fp.die("switch of %s was submitted but not applied within 180s — check the panel"
+                   % site.get("domain"))
+        time.sleep(3)
+    print("switched: %s (site id %s)" % (site.get("domain"), site_id))
+    print("backend: %s, %s (was %s)" % (php_label(str(after.get("handler_version") or "")),
+                                        after.get("handler"), now))
+    return 0
+
+
 def cmd_add(args):
     domain = args.domain.strip().lower().rstrip(".")
     panel = fp.panel_for(args)
@@ -485,18 +571,10 @@ def cmd_add(args):
     site = wait_for_site(panel, domain, site_id)
     site_id = site["id"]
     if args.kind != "php":
-        # Same payload as the panel's "backend" form.
-        backend = {
-            "index_dir": site.get("index_dir"),
-            "manual_changes": False,
-            "type": args.kind,
-            "handler": None,
-            "port": site.get("port"),
-            "socket_path": site.get("socket_path"),
-        }
+        change = {"type": args.kind, "handler": None}
         if args.kind == "reverse_proxy":
-            backend["upstreams"] = [{"type": "host", "address": args.proxy}]
-        status, data = panel.call("PUT", "/sites/backend/%s" % site_id, backend)
+            change["upstreams"] = [{"type": "host", "address": args.proxy}]
+        status, data = put_backend(panel, site, read_backend(panel, site_id), change)
         if status >= 300:
             fp.die("site %s created (id %s) as php, but switching it to %s failed (HTTP %s): %s"
                    % (domain, site_id, args.kind, status, fp.panel_error(data)))
@@ -564,6 +642,15 @@ def main():
     p = sub.add_parser("options", help="what `add` can choose from on this panel")
     fp.add_account_arg(p)
     p.set_defaults(func=cmd_options)
+
+    p = sub.add_parser("backend", help="switch a site's php handler and/or version")
+    p.add_argument("domain")
+    p.add_argument("--handler", help="mpm_itk (apache module) or fcgi (fastcgi); "
+                   "php_fpm and cgi too, if the version supports them")
+    p.add_argument("--php", metavar="VER", help="php version as the panel lists it: 83, 8.3, 56 ...")
+    p.add_argument("--no-prompt", action="store_true", help="never ask on a terminal")
+    fp.add_account_arg(p)
+    p.set_defaults(func=cmd_backend)
 
     p = sub.add_parser("ssl", help="(re)issue let's encrypt for a site once its dns is in place")
     p.add_argument("domain")

@@ -1,6 +1,6 @@
 ---
 name: fastpanel-sites
-description: List, inspect and create sites on a FastPanel/FluxPanel account (id, aliases, document root, owner, SSL, ips; new PHP, static or reverse-proxy (node.js) site with backend, php version, ip, gzip, static cache, log settings and a Let's Encrypt certificate). Use when asked what sites are on the panel, "какие сайты на панели", "покажи сайт example.com", "создай сайт", "добавь сайт example.com", "довыпусти сертификат", "перевыпусти SSL", or when a site id or document root is needed for another task.
+description: List, inspect and create sites on a FastPanel/FluxPanel account (id, aliases, document root, owner, SSL, ips; new PHP, static or reverse-proxy (node.js) site with backend, php version, ip, gzip, static cache, log settings and a Let's Encrypt certificate). Use when asked what sites are on the panel, "какие сайты на панели", "покажи сайт example.com", "создай сайт", "добавь сайт example.com", "довыпусти сертификат", "перевыпусти SSL", "смени версию PHP", "поменяй обработчик", or when a site id or document root is needed for another task.
 ---
 
 # fastpanel-sites — сайты аккаунта панели
@@ -12,6 +12,7 @@ python3 "$SCRIPT" list [-A ИМЯ]              # домены и их site id
 python3 "$SCRIPT" show DOMAIN [-A ИМЯ]       # подробности одного сайта
 python3 "$SCRIPT" options [-A ИМЯ]           # из чего выбирать при создании
 python3 "$SCRIPT" add DOMAIN [опции] [-A ИМЯ] --no-prompt   # создать сайт
+python3 "$SCRIPT" backend DOMAIN --handler H --php V [-A ИМЯ] --no-prompt  # сменить обработчик/версию PHP
 python3 "$SCRIPT" ssl DOMAIN [-A ИМЯ]        # довыпустить сертификат, когда DNS готов
 ```
 
@@ -73,6 +74,19 @@ python3 "$SCRIPT" ssl DOMAIN [-A ИМЯ]        # довыпустить сер�
 поддержаны — для Node.js берётся прокси на порт, где приложение уже слушает.
 База данных, FTP/SFTP и SSH в мастере не создаются; БД к сайту — через `fastpanel-db add --site`.
 
+## Смена обработчика и версии PHP
+
+`backend DOMAIN` меняет обработчик и/или версию PHP существующего сайта
+(`PUT /api/sites/backend/<id>`, как форма «Бэкенд»). Спроси у пользователя тем же
+вопросом, что при создании: «Модуль Apache (mpm_itk), PHP <версия по умолчанию>» или
+«FastCGI (fcgi)» — и для FastCGI версию. Передай `--handler` и `--php` флагами.
+
+Что не указано, остаётся прежним, если новая пара это допускает. `mpm_itk` есть только
+у версии по умолчанию, поэтому `--handler mpm_itk` без `--php` переводит и версию на
+неё. Если сайт уже работает так — `unchanged:`, код 0. Скрипт ждёт, пока панель
+применит смену, и печатает, что было и что стало. Статику и прокси эта команда не
+включает.
+
 ## Довыпуск сертификата
 
 `ssl DOMAIN` — когда A-запись домена или алиаса (например `www.`) добавлена после
@@ -86,7 +100,7 @@ python3 "$SCRIPT" ssl DOMAIN [-A ИМЯ]        # довыпустить сер�
 
 Эндпоинты: `GET /api/sites/list?filter[...]`, `GET /api/sites/simple`, `GET /api/sites/<id>`,
 `GET /api/settings` (версии PHP: `configuration.php_version`, IP: `ips`), `GET /api/me`,
-`POST /api/master/domain`, `PUT /api/master`, `PUT /api/sites/<id>`, `PUT /api/sites/backend/<id>`,
+`POST /api/master/domain`, `PUT /api/master`, `PUT /api/sites/<id>`, `GET|PUT /api/sites/backend/<id>`,
 `GET|PUT /api/sites/<id>/log_rotate`, `POST /api/certificates`, `GET /api/certificates/<id>`. Алиасы в объекте сайта — `aliases[].name`. `GET /api/sites` не существует.
 
 Доступы и правила обращения с паролем: `${CLAUDE_PLUGIN_ROOT}/SETUP.md`. Коротко: один файл
