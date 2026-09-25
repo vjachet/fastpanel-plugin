@@ -105,11 +105,25 @@ python3 $P/fastpanel-db/scripts/fastpanel_db.py add shop_main --site shop.exampl
 
 ## Обновление
 
+Если плагин ставился из локальной копии — сначала обнови её:
+
 ```bash
 cd ~/plugins/fastpanel-plugin && git pull      # или распакуй новый архив поверх
 ```
 
-В Claude Code: `/plugin marketplace update fastpanel`.
+Затем, в терминале:
+
+```bash
+claude plugin marketplace update fastpanel
+claude plugin update fastpanel@fastpanel
+```
+
+Новая версия подхватится при следующем запуске Claude Code или сразу после `/reload-plugins`.
+
+Сам плагин не обновляется: у сторонних маркетплейсов автообновление по умолчанию
+выключено. Включить: `/plugin` → вкладка **Marketplaces** → `fastpanel` →
+**Enable auto-update**. Тогда проверка идёт в фоне после старта сессии, а новая
+версия загружается при следующем запуске.
 
 ## Удаление
 
