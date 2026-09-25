@@ -416,7 +416,7 @@ def all_sites(panel):
 def site_names(site):
     names = {site.get("domain"), site.get("main_domain")}
     for alias in site.get("aliases") or []:
-        names.add(alias.get("domain") if isinstance(alias, dict) else alias)
+        names.add((alias.get("name") or alias.get("domain")) if isinstance(alias, dict) else alias)
     return {n for n in names if n}
 
 

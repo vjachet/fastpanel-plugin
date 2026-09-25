@@ -2,6 +2,7 @@
 """Sites of a panel account: list, show one, create one (php, static or reverse proxy)."""
 
 import os
+import re
 import socket
 import sys
 import time
@@ -382,6 +383,49 @@ def issue_certificate(panel, site_id, domain, aliases, ips):
     return line
 
 
+def certificate_names(panel, cert):
+    """Names an attached certificate covers; empty when there is none or it cannot be read."""
+    cert_id = cert.get("id") if isinstance(cert, dict) else cert
+    if not cert_id:
+        return set()
+    status, data = panel.call("GET", "/certificates/%s" % cert_id)
+    c = data.get("data") if status == 200 and isinstance(data, dict) else None
+    if not isinstance(c, dict):
+        return set()
+    names = {c.get("common_name")} | set(re.split(r"[\s,]+", c.get("alternative_name") or ""))
+    return {n.lower() for n in names if n}
+
+
+def cmd_ssl(args):
+    """(Re)issue Let's Encrypt once dns is in place — e.g. an alias's A record was added later."""
+    domain = args.domain.strip().lower().rstrip(".")
+    panel = fp.panel_for(args)
+    site_id = fp.find_site_id(panel, domain)
+    if not site_id:
+        fp.die("site %s not found under this panel account" % domain)
+    site = wait_for_site(panel, domain, site_id)
+    main = site.get("domain")
+    aliases = sorted(fp.site_names(site) - {main})
+    ips = [ip_value(i) for i in site.get("ips") or []]
+
+    wanted = {n for n in [main] + aliases if resolves_to(n, ips)[0]}
+    if not wanted:
+        fp.die("%s does not point to the site's ip (%s) yet — nothing to issue"
+               % (main, ", ".join(ips)))
+    have = certificate_names(panel, site.get("certificate"))
+    if wanted <= have:
+        print("covered: the site's certificate already has %s — nothing changed"
+              % ", ".join(sorted(wanted)))
+        missing = sorted(set(aliases) - wanted - have)
+        if missing:
+            print("no dns here yet: %s" % ", ".join(missing))
+        return 0
+
+    line = issue_certificate(panel, site["id"], main, aliases, ips)
+    print("ssl: %s" % line)
+    return 0 if line.startswith("issued for") else 1
+
+
 def cmd_add(args):
     domain = args.domain.strip().lower().rstrip(".")
     panel = fp.panel_for(args)
@@ -520,6 +564,11 @@ def main():
     p = sub.add_parser("options", help="what `add` can choose from on this panel")
     fp.add_account_arg(p)
     p.set_defaults(func=cmd_options)
+
+    p = sub.add_parser("ssl", help="(re)issue let's encrypt for a site once its dns is in place")
+    p.add_argument("domain")
+    fp.add_account_arg(p)
+    p.set_defaults(func=cmd_ssl)
 
     p = sub.add_parser("add", help="create a site: php, static or reverse proxy")
     p.add_argument("domain")

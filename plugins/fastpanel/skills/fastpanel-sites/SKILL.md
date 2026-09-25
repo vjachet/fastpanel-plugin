@@ -1,6 +1,6 @@
 ---
 name: fastpanel-sites
-description: List, inspect and create sites on a FastPanel/FluxPanel account (id, aliases, document root, owner, SSL, ips; new PHP, static or reverse-proxy (node.js) site with backend, php version, ip, gzip, static cache, log settings and a Let's Encrypt certificate). Use when asked what sites are on the panel, "какие сайты на панели", "покажи сайт example.com", "создай сайт", "добавь сайт example.com", or when a site id or document root is needed for another task.
+description: List, inspect and create sites on a FastPanel/FluxPanel account (id, aliases, document root, owner, SSL, ips; new PHP, static or reverse-proxy (node.js) site with backend, php version, ip, gzip, static cache, log settings and a Let's Encrypt certificate). Use when asked what sites are on the panel, "какие сайты на панели", "покажи сайт example.com", "создай сайт", "добавь сайт example.com", "довыпусти сертификат", "перевыпусти SSL", or when a site id or document root is needed for another task.
 ---
 
 # fastpanel-sites — сайты аккаунта панели
@@ -12,6 +12,7 @@ python3 "$SCRIPT" list [-A ИМЯ]              # домены и их site id
 python3 "$SCRIPT" show DOMAIN [-A ИМЯ]       # подробности одного сайта
 python3 "$SCRIPT" options [-A ИМЯ]           # из чего выбирать при создании
 python3 "$SCRIPT" add DOMAIN [опции] [-A ИМЯ] --no-prompt   # создать сайт
+python3 "$SCRIPT" ssl DOMAIN [-A ИМЯ]        # довыпустить сертификат, когда DNS готов
 ```
 
 `list` печатает домен, `id` и пометки: `disabled`, `ssl`, `errors:N`.
@@ -72,12 +73,21 @@ python3 "$SCRIPT" add DOMAIN [опции] [-A ИМЯ] --no-prompt   # созда
 поддержаны — для Node.js берётся прокси на порт, где приложение уже слушает.
 База данных, FTP/SFTP и SSH в мастере не создаются; БД к сайту — через `fastpanel-db add --site`.
 
+## Довыпуск сертификата
+
+`ssl DOMAIN` — когда A-запись домена или алиаса (например `www.`) добавлена после
+создания сайта. Берёт домен и алиасы сайта, которые уже резолвятся на его IP; если
+текущий сертификат их все покрывает — печатает `covered:` и ничего не меняет (и
+перечисляет алиасы, у которых DNS ещё не здесь). Иначе выпускает новый Let's Encrypt
+на `admin@DOMAIN`, привязывает к сайту и включает HTTPS, как `add`. Старый сертификат
+остаётся в панели. Код `0` — покрыто или выпущено, `1` — не вышло (строка `ssl:`).
+
 Коды выхода: `0` — создан или уже был; `1` — ошибка; `3` — домен занят другим пользователем.
 
 Эндпоинты: `GET /api/sites/list?filter[...]`, `GET /api/sites/simple`, `GET /api/sites/<id>`,
 `GET /api/settings` (версии PHP: `configuration.php_version`, IP: `ips`), `GET /api/me`,
 `POST /api/master/domain`, `PUT /api/master`, `PUT /api/sites/<id>`, `PUT /api/sites/backend/<id>`,
-`GET|PUT /api/sites/<id>/log_rotate`, `POST /api/certificates`, `GET /api/certificates/<id>`. `GET /api/sites` не существует.
+`GET|PUT /api/sites/<id>/log_rotate`, `POST /api/certificates`, `GET /api/certificates/<id>`. Алиасы в объекте сайта — `aliases[].name`. `GET /api/sites` не существует.
 
 Доступы и правила обращения с паролем: `${CLAUDE_PLUGIN_ROOT}/SETUP.md`. Коротко: один файл
 `~/.config/fastpanel/config.json` (`600`), **читать его нельзя**, пароль в чат не попадает.
