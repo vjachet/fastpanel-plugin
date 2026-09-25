@@ -365,10 +365,16 @@ def own_login(panel):
 def own_user_id(panel):
     """Numeric id of the panel user we are logged in as.
 
-    The token carries the login, not the id (claim "id" is a string), and there
-    is no /users/me on the panel, so match ourselves in the user list: a
-    non-admin sees only their own row there, an admin sees everyone.
+    The token carries the login, not the id (claim "id" is a string). GET /api/me
+    answers directly; older panels without it fall back to matching ourselves in
+    the user list: a non-admin sees only their own row there.
     """
+    status, data = panel.call("GET", "/me")
+    if status == 200:
+        me = data.get("data") if isinstance(data, dict) else None
+        if isinstance(me, dict) and isinstance(me.get("id"), int):
+            return me["id"]
+
     login = own_login(panel)
     status, data = panel.call("GET", "/users")
     if status == 200:

@@ -9,7 +9,7 @@ Root и админ панели не нужны.
 | Скилл | Что умеет |
 |---|---|
 | `fastpanel-accounts` | какие аккаунты панели настроены; кто мы на панели (user id, home, владелец, квота) |
-| `fastpanel-sites` | список сайтов с их id; подробности одного сайта |
+| `fastpanel-sites` | список сайтов с их id; подробности одного сайта; создание сайта (PHP модулем Apache или FastCGI с выбором версии, статика или обратный прокси для Node.js) с выбором IP, сжатия, кеша статики и логов, с сертификатом Let's Encrypt |
 | `fastpanel-db` | список баз; серверы БД и кодировки; идемпотентное создание базы с пользователем и привязкой к сайту |
 
 Общее ядро — `plugins/fastpanel/lib/fastpanel_api.py`: конфиг, логин, кеш токена, разбор
@@ -81,6 +81,8 @@ P=~/.claude/plugins/.../plugins/fastpanel/skills
 python3 $P/fastpanel-accounts/scripts/fastpanel_accounts.py list
 python3 $P/fastpanel-accounts/scripts/fastpanel_accounts.py whoami -A work
 python3 $P/fastpanel-sites/scripts/fastpanel_sites.py list -A work
+python3 $P/fastpanel-sites/scripts/fastpanel_sites.py options -A work
+python3 $P/fastpanel-sites/scripts/fastpanel_sites.py add shop.example.com -A work --handler fcgi --php 74
 python3 $P/fastpanel-db/scripts/fastpanel_db.py servers -A work
 python3 $P/fastpanel-db/scripts/fastpanel_db.py add shop_main -A work --site shop.example.com
 python3 $P/fastpanel-db/scripts/fastpanel_db.py add analytics -A work --server pg15 --charset cp1251
@@ -139,4 +141,12 @@ plugins/fastpanel/
 Проверено на живой панели: `POST /login`, `GET /api/users`, `GET /api/charsets`,
 `GET /api/databases?offset=&limit=`, `POST /api/databases`, `GET /api/databases/servers`,
 `GET /api/databases/servers/<id>/users`, `GET /api/sites/list?filter[...]`,
-`GET /api/sites/simple`. Эндпоинтов `/api/users/me`, `/api/current_user` и `/api/sites` нет.
+`GET /api/sites/simple`, `GET /api/sites/<id>`, `GET /api/me`, `GET /api/settings`
+(версии PHP и IP), `POST /api/master/domain`, `PUT /api/master` (создание сайта), `PUT /api/sites/backend/<id>` (бэкенд),
+`PUT /api/sites/<id>` (сжатие, кеш статики, HTTPS), `GET|PUT /api/sites/<id>/log_rotate`,
+`POST /api/certificates`, `GET /api/certificates/<id>`.
+Эндпоинтов `/api/users/me`, `/api/current_user` и `/api/sites` нет.
+
+У нового сайта по умолчанию: логирование посещений выключено, ротация 0 копий,
+gzip 5, кеш статики 14 дней, сертификат Let's Encrypt на `admin@<домен>` с редиректом на
+HTTPS, HSTS, HTTP/2 и HTTP/3. Всё меняется флагами, список — `fastpanel_sites.py options`.

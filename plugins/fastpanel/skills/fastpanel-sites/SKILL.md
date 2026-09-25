@@ -1,6 +1,6 @@
 ---
 name: fastpanel-sites
-description: List the sites of a FastPanel/FluxPanel account and show one site in detail (id, aliases, document root, owner, SSL, ips). Use when asked what sites are on the panel, "какие сайты на панели", "покажи сайт example.com", or when a site id or document root is needed for another task.
+description: List, inspect and create sites on a FastPanel/FluxPanel account (id, aliases, document root, owner, SSL, ips; new PHP, static or reverse-proxy (node.js) site with backend, php version, ip, gzip, static cache, log settings and a Let's Encrypt certificate). Use when asked what sites are on the panel, "какие сайты на панели", "покажи сайт example.com", "создай сайт", "добавь сайт example.com", or when a site id or document root is needed for another task.
 ---
 
 # fastpanel-sites — сайты аккаунта панели
@@ -8,18 +8,76 @@ description: List the sites of a FastPanel/FluxPanel account and show one site i
 ```bash
 SCRIPT="${CLAUDE_PLUGIN_ROOT}/skills/fastpanel-sites/scripts/fastpanel_sites.py"
 
-python3 "$SCRIPT" list [-A ИМЯ]            # домены и их site id
-python3 "$SCRIPT" show DOMAIN [-A ИМЯ]     # подробности одного сайта
+python3 "$SCRIPT" list [-A ИМЯ]              # домены и их site id
+python3 "$SCRIPT" show DOMAIN [-A ИМЯ]       # подробности одного сайта
+python3 "$SCRIPT" options [-A ИМЯ]           # из чего выбирать при создании
+python3 "$SCRIPT" add DOMAIN [опции] [-A ИМЯ] --no-prompt   # создать сайт
 ```
 
 `list` печатает домен, `id` и пометки: `disabled`, `ssl`, `errors:N`.
 `show` ищет домен и среди алиасов, печатает id, алиасы, корень сайта, владельца,
 включён ли, есть ли сертификат, ip и дату создания.
 
-Эндпоинты панели: `GET /api/sites/list?filter[...]` (постраничный) и `GET /api/sites/simple`
-(короткий список id + домен, его же читает форма создания БД). `GET /api/sites` не существует.
+## Создание сайта
 
-Только чтение: этот инструмент ничего не меняет на панели.
+Перед `add` запусти `options`: он печатает IP сервера, установленные версии PHP с
+доступными обработчиками и значения по умолчанию. Покажи пользователю выбор
+инструментом вопроса с вариантами, всегда оставляя возможность ввести своё:
+
+1. бэкенд сайта — четыре варианта: «Модуль Apache (mpm_itk), PHP <версия по умолчанию>»
+   (первым), «FastCGI (fcgi)», «Статический контент, без PHP» или «Обратный прокси
+   (Node.js и др.)»; модуль идёт только с версией по умолчанию;
+2. для FastCGI — версия PHP: те, у которых в `options` есть `fcgi`, по умолчанию
+   та, что помечена `(default)`; для прокси — порт приложения на этом
+   сервере (своим вводом, без угадывания), адрес будет `http://localhost:ПОРТ`;
+3. выпускать ли сертификат Let's Encrypt — первым вариантом «да (рекомендуется)»;
+4. настройки nginx и логов — одним вопросом: оставить значения по умолчанию или
+   изменить (тогда спроси, какие).
+
+Значения по умолчанию (отличаются от панельных):
+
+| опция | по умолчанию | флаг |
+|---|---|---|
+| логирование посещений | выкл | `--access-log` / `--no-access-log` |
+| ротация логов, копий | 0 | `--rotate N` |
+| сжатие gzip | уровень 5 | `--gzip-level 1..9`, `--no-gzip` |
+| кеш статики | 14 дней | `--cache-days N` (0 — выкл) |
+| алиас | `www.DOMAIN` | `--alias ИМЯ` (повторяемый), `--no-www` |
+| IP | первый включённый IP сервера, не спрашивается | `--ip IP` (повторяемый) |
+| бэкенд | модуль Apache `mpm_itk` на версии по умолчанию | `--handler mpm_itk` / `--handler fcgi` / `--static` / `--proxy ПОРТ` |
+| версия PHP | версия по умолчанию панели | `--php 83` (или `8.3`), для `fcgi` — любая с `fcgi` |
+| сертификат Let's Encrypt | да, email `admin@DOMAIN` | `--ssl` / `--no-ssl` |
+
+Под агентом всегда передавай `--no-prompt` и все выбранные значения флагами — без
+терминала скрипт не спрашивает, а берёт значения по умолчанию.
+
+Что делает `add`:
+- если домен уже есть у этого аккаунта (как основной или алиас) — печатает `exists:`
+  и ничего не меняет, код 0;
+- проверяет домен тем же запросом, что мастер панели (`POST /api/master/domain`);
+  если домен занят другим пользователем панели — код 3: спроси у пользователя другой;
+- создаёт сайт (`PUT /api/master`), ждёт, пока задача в очереди завершится и сайт
+  станет `active` (до 3 минут);
+- выставляет сжатие и кеш статики (`PUT /api/sites/<id>`, как форма «Статический
+  контент») и логи (`PUT /api/sites/<id>/log_rotate`, как форма «Настройки логов»);
+- выпускает сертификат Let's Encrypt (`POST /api/certificates`) на домен и те алиасы,
+  что уже смотрят на IP сайта, ждёт выпуска и включает редирект на HTTPS, HSTS,
+  HTTP/2 и HTTP/3 (`PUT /api/sites/<id>`, как форма «HTTPS»). Если сам домен не
+  резолвится на IP сайта — сертификат пропускается. Неудача с сертификатом сайт не
+  откатывает: строка `ssl:` в выводе говорит, что случилось, — передай её пользователю.
+
+Статика и обратный прокси создаются в два шага (оба запроса сняты с интерфейса панели): сайт рождается PHP-сайтом с
+настройками по умолчанию, затем бэкенд переключается `PUT /api/sites/backend/<id>`
+(как форма «Бэкенд»). Тип Node.js (панель сама запускает приложение) и systemd не
+поддержаны — для Node.js берётся прокси на порт, где приложение уже слушает.
+База данных, FTP/SFTP и SSH в мастере не создаются; БД к сайту — через `fastpanel-db add --site`.
+
+Коды выхода: `0` — создан или уже был; `1` — ошибка; `3` — домен занят другим пользователем.
+
+Эндпоинты: `GET /api/sites/list?filter[...]`, `GET /api/sites/simple`, `GET /api/sites/<id>`,
+`GET /api/settings` (версии PHP: `configuration.php_version`, IP: `ips`), `GET /api/me`,
+`POST /api/master/domain`, `PUT /api/master`, `PUT /api/sites/<id>`, `PUT /api/sites/backend/<id>`,
+`GET|PUT /api/sites/<id>/log_rotate`, `POST /api/certificates`, `GET /api/certificates/<id>`. `GET /api/sites` не существует.
 
 Доступы и правила обращения с паролем: `${CLAUDE_PLUGIN_ROOT}/SETUP.md`. Коротко: один файл
 `~/.config/fastpanel/config.json` (`600`), **читать его нельзя**, пароль в чат не попадает.
