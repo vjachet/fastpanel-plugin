@@ -1,16 +1,24 @@
 #!/usr/bin/env python3
 """Shared core for the fastpanel tools: config, login, http, small helpers.
 
-Panel credentials never leave this process: they are read from a 0600 json
-file, sent only to the panel's own /login endpoint, and scrubbed from every
-error path. Nothing reaches stdout but status lines.
+Panel credentials never leave this process: the login and the password are read
+from a 0600 json file and sent only to the panel's own /login endpoint, the
+token it returns is kept in a 0600 cache file. All three are scrubbed from
+everything the process writes to stdout and stderr — including what the panel
+itself reports (paths, owners), not just the error path.
 
-The config holds one panel url and an array of accounts; --account picks one.
+The config holds one panel url and an array of accounts; --account picks one by
+its "name". The login is a secret here and never serves as an identifier.
+
+An account that sees several panel users (the administrator, login "fastpanel",
+sees them all) must give whatever it creates an owner (--owner), and that owner
+is never the administrator itself — see resolve_owner().
 Every tool in this plugin imports this module — see load_lib() in the scripts.
 """
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import re
@@ -34,15 +42,45 @@ DB_OUT_DIR = os.path.join(CONFIG_DIR, "databases")
 CACHE_DIR = os.path.expanduser("~/.cache/fastpanel")
 
 PAGE = 100  # the panel's own ui pages the list this way
-SECRETS = []  # values scrubbed from any output
+SECRETS = []  # passwords and tokens: scrubbed from any output, exact match
+LOGINS = []  # panel logins: scrubbed too, in any letter case
+
+# The administrator's login is the same on every panel, so it is no secret —
+# and scrubbing it would eat the word out of our own paths and script names.
+ADMIN_LOGIN = "fastpanel"
+OWNER_NEEDED = 4  # exit code: the account sees several panel users, the owner was not named
 
 
 def scrub(text):
     out = str(text)
-    for s in SECRETS:
+    for s in sorted(set(SECRETS), key=len, reverse=True):
         if s:
             out = out.replace(s, "***")
+    for s in sorted(set(LOGINS), key=len, reverse=True):
+        if s:
+            out = re.sub(re.escape(s), "***", out, flags=re.IGNORECASE)
     return out
+
+
+class _Scrubbed:
+    """stdout/stderr stand-in: nothing leaves the process unscrubbed."""
+
+    def __init__(self, stream):
+        self._stream = stream
+
+    def write(self, text):
+        return self._stream.write(scrub(text))
+
+    def writelines(self, lines):
+        for line in lines:
+            self.write(line)
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+sys.stdout = _Scrubbed(sys.stdout)
+sys.stderr = _Scrubbed(sys.stderr)
 
 
 def die(msg, code=1):
@@ -65,7 +103,7 @@ Create it yourself, in your own terminal — not through an agent:
     "url": "panel.example.com",
     "accounts": [
       {"login": "user1", "password": "secret1", "label": "what this account is"},
-      {"login": "user2", "password": "secret2"}
+      {"login": "user2", "password": "secret2", "name": "second"}
     ]
   }
   JSON
@@ -77,9 +115,10 @@ script, the same way for every panel. Add a port if your panel runs on one
 ("panel.example.com:8888").
 
 One account is enough; add more objects to the array for more panel users or
-more panels (an account may carry its own "url"). An account is referred to by
-its login, or by "name" if you give it one. Set "insecure": true only if the
-panel has a self-signed certificate.
+more panels (an account may carry its own "url"). The login is never shown: an
+account is referred to by a generated name like acc-1a2b3c4d (see the accounts
+tool), or by "name" if you give it one — anything but the login. Set
+"insecure": true only if the panel has a self-signed certificate.
 
 Check it with the accounts tool:  fastpanel_accounts.py list""" % {
     "dir": os.path.dirname(CONFIG_FILE) or ".",
@@ -110,6 +149,66 @@ def check_perms(path):
         die("%s is not owned by you" % path)
 
 
+def _safe(name):
+    return re.sub(r"[^A-Za-z0-9._-]", "_", name)
+
+
+def name_salt():
+    """Random bytes kept next to the config: without them a hashed account name
+    could be checked against a guessed login."""
+    path = os.path.join(os.path.dirname(CONFIG_FILE) or ".", "name-salt")
+    try:
+        with open(path, "rb") as fh:
+            salt = fh.read()
+        if salt:
+            return salt
+    except OSError:
+        pass
+    salt = secrets.token_bytes(32)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(salt)
+    return salt
+
+
+def hashed_name(acc):
+    """Name for an account that has none: a stable hash of its panel and login.
+    It stands in for the login everywhere — --account, output, file names."""
+    key = "%s\n%s" % (acc.get("url") or "", acc.get("login") or "")
+    return "acc-" + hashlib.sha256(name_salt() + key.encode("utf-8")).hexdigest()[:8]
+
+
+def migrate_legacy(acc):
+    """Accounts used to be named by their login, and so were their files. Move
+    those under the current name, so no file name carries a login any more.
+    Quiet on purpose: a failure here is retried on the next run."""
+    old = _safe(str(acc.get("login") or ""))
+    new = _safe(acc["name"])
+    if not old or old == new:
+        return
+    try:
+        os.remove(os.path.join(CACHE_DIR, "token-" + old))  # only a cache
+    except OSError:
+        pass
+    old_dir, new_dir = os.path.join(DB_OUT_DIR, old), os.path.join(DB_OUT_DIR, new)
+    if not os.path.isdir(old_dir) or os.path.islink(old_dir):
+        return
+    try:
+        if not os.path.exists(new_dir):
+            os.rename(old_dir, new_dir)
+            return
+        for entry in os.listdir(old_dir):
+            target = os.path.join(new_dir, entry)
+            n = 0
+            while os.path.exists(target):  # never overwrite database credentials
+                n += 1
+                target = os.path.join(new_dir, "%s.old%d" % (entry, n))
+            os.rename(os.path.join(old_dir, entry), target)
+        os.rmdir(old_dir)
+    except OSError:
+        pass
+
+
 def load_config():
     """{"url":..., "insecure":..., "accounts": [{name, login, password, label}]}"""
     if not os.path.exists(CONFIG_FILE):
@@ -135,19 +234,31 @@ def load_config():
     for i, acc in enumerate(accounts):
         if not isinstance(acc, dict):
             die("accounts[%d] in %s is not an object" % (i, CONFIG_FILE))
+        # scrub every login and password, not just the used one
         if acc.get("password"):
-            SECRETS.append(acc["password"])  # scrub every password, not just the used one
+            SECRETS.append(str(acc["password"]))
+        if acc.get("login") and not is_admin(acc):
+            LOGINS.append(str(acc["login"]))
         acc = dict(acc)
-        acc["name"] = str(acc.get("name") or acc.get("login") or "account%d" % i)
+        acc["name"] = str(acc.get("name") or "").strip()
         acc["url"] = normalize_url(acc.get("url")) or url  # per-account override, rarely needed
         acc["insecure"] = acc.get("insecure", raw.get("insecure", False))
         clean.append(acc)
+
+    for i, acc in enumerate(clean):
+        if not acc["name"]:
+            acc["name"] = hashed_name(acc)
+        if any(login.lower() in acc["name"].lower() for login in LOGINS):
+            die('the "name" of accounts[%d] in %s contains a panel login. Give it another '
+                'name yourself, in your own terminal.' % (i, CONFIG_FILE))
 
     seen = set()
     for acc in clean:
         if acc["name"] in seen:
             die("two accounts in %s share the name %r" % (CONFIG_FILE, acc["name"]))
         seen.add(acc["name"])
+    for acc in clean:
+        migrate_legacy(acc)
     return clean
 
 
@@ -158,7 +269,7 @@ def resolve_account(requested):
 
     if requested:
         for acc in accounts:
-            if requested in (acc["name"], acc.get("login")):
+            if requested == acc["name"]:
                 return acc
         die(
             "account %r is not in %s. Known accounts: %s"
@@ -175,6 +286,10 @@ def resolve_account(requested):
     )
 
 
+def is_admin(cfg):
+    return str(cfg.get("login") or "").strip().lower() == ADMIN_LOGIN
+
+
 def read_credentials(requested):
     acc = resolve_account(requested)
     missing = [k for k in ("login", "password") if not acc.get(k)]
@@ -184,8 +299,8 @@ def read_credentials(requested):
 
 
 def safe_name(name):
-    """Account names become file names — logins may hold @ and dots."""
-    return re.sub(r"[^A-Za-z0-9._-]", "_", name)
+    """Account names become file names."""
+    return _safe(name)
 
 
 def truthy(val):
@@ -193,7 +308,7 @@ def truthy(val):
 
 
 def list_accounts():
-    """Print account names and logins — never passwords."""
+    """Print account names, panels and labels — never logins or passwords."""
     accounts = load_config()
     width = max(len(a["name"]) for a in accounts)
     for acc in accounts:
@@ -201,8 +316,10 @@ def list_accounts():
         detail = (
             "INCOMPLETE (missing %s)" % ", ".join(missing)
             if missing
-            else "%s  %s" % (acc["url"], acc["login"])
+            else acc["url"]
         )
+        if is_admin(acc):
+            detail += "  [panel administrator]"
         note = acc.get("label") or ""
         print("%-*s  %s%s" % (width, acc["name"], detail, ("  — " + note) if note else ""))
     return 0
@@ -213,9 +330,21 @@ def list_accounts():
 # --------------------------------------------------------------------------
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect would carry the token (or a retried login) to wherever the
+    answer points. The panel's api never redirects; if something does, stop."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 class Panel:
     def __init__(self, cfg):
         self.base = cfg["url"]
+        parts = urllib.parse.urlsplit(self.base)
+        if parts.scheme != "https" and parts.hostname not in ("localhost", "127.0.0.1", "::1"):
+            die("the panel url of account %s is not https — the login and password would "
+                "travel in the clear. Fix \"url\" in %s yourself." % (cfg["name"], CONFIG_FILE))
         self.api = self.base + "/api"
         self.cfg = cfg
         self.token = None
@@ -224,6 +353,9 @@ class Panel:
             self.ctx = ssl._create_unverified_context()
         else:
             self.ctx = ssl.create_default_context()
+        self.opener = urllib.request.build_opener(
+            urllib.request.HTTPSHandler(context=self.ctx), _NoRedirect
+        )
 
     def _request(self, method, url, body=None, token=None):
         data = json.dumps(body).encode("utf-8") if body is not None else None
@@ -234,11 +366,14 @@ class Panel:
         if token:
             req.add_header("Authorization", "Bearer " + token)
         try:
-            with urllib.request.urlopen(req, context=self.ctx, timeout=60) as resp:
+            with self.opener.open(req, timeout=60) as resp:
                 raw = resp.read().decode("utf-8", "replace")
                 return resp.status, (json.loads(raw) if raw.strip() else {})
         except urllib.error.HTTPError as exc:
-            raw = exc.read().decode("utf-8", "replace")
+            try:
+                raw = exc.read().decode("utf-8", "replace")
+            except OSError:
+                raw = ""
             try:
                 return exc.code, json.loads(raw)
             except ValueError:
@@ -264,6 +399,7 @@ class Panel:
                     body.get("message") or "no token in response",
                 )
             )
+        SECRETS.append(token)
         self._cache_token(token)
         return token
 
@@ -282,6 +418,8 @@ class Panel:
             return None
         with open(self.token_path, encoding="utf-8") as fh:
             token = fh.read().strip()
+        if token:
+            SECRETS.append(token)
         return token if token and not jwt_expired(token) else None
 
     def auth(self, force=False):
@@ -392,7 +530,143 @@ def own_user_id(panel):
             return val
         if isinstance(val, str) and val.isdigit():
             return int(val)
-    die("cannot determine the panel user id for login %s" % login)
+    die("cannot determine the panel user id of account %s" % panel.cfg["name"])
+
+
+def panel_users(panel):
+    """GET /api/users — everyone for the administrator, just ourselves otherwise."""
+    status, data = panel.call("GET", "/users")
+    if status != 200:
+        die("cannot list panel users (HTTP %s): %s" % (status, panel_error(data)))
+    return [u for u in unwrap(data) if isinstance(u, dict)]
+
+
+def user_login(user):
+    return str(user.get("username") or user.get("login") or "")
+
+
+def is_admin_user(user):
+    """The panel administrator, whatever its login is on this panel."""
+    roles = user.get("roles") or []
+    return user_login(user).lower() == ADMIN_LOGIN or any("ADMIN" in str(r).upper() for r in roles)
+
+
+def user_label(user, names=None):
+    """Login of a panel user, or the account name where the login is one of ours."""
+    if names is None:
+        names = {str(a.get("login") or "").lower(): a["name"] for a in load_config()}
+    login = user_login(user)
+    if login.lower() in names and login.lower() != ADMIN_LOGIN:
+        return "account %s" % names[login.lower()]
+    return login or "?"
+
+
+def announce(panel, action, owner_id=None):
+    """Say where this is about to happen before anything is touched: which
+    panel server, under which account, for which panel user."""
+    print("server:  %s" % panel.base)
+    print("account: %s" % panel.cfg["name"])
+    if owner_id is not None:
+        who = next((user_label(u) for u in panel_users(panel) if u.get("id") == owner_id), "?")
+        print("owner:   %s (user id %s)" % (who, owner_id))
+    print("action:  %s" % action)
+    sys.stdout.flush()
+
+
+def user_lines(panel):
+    """One line per panel user: id and login, or the account name where the
+    login is one of ours — that one is scrubbed and cannot be typed anyway."""
+    names = {str(a.get("login") or "").lower(): a["name"] for a in load_config()}
+    out = []
+    for user in sorted(panel_users(panel), key=lambda u: u.get("id") or 0):
+        who = user_label(user, names)
+        if is_admin_user(user):
+            who += "  [panel administrator, cannot own anything]"
+        out.append("id %-5s %s" % (user.get("id", "?"), who))
+    return out
+
+
+def resolve_owner(panel, requested):
+    """Numeric id of the panel user the new site/database/... will belong to.
+
+    An account that sees only itself owns what it creates, no questions asked.
+    One that sees several panel users (the administrator does) must be told who
+    the owner is — by panel login, user id or configured account name. The
+    administrator itself never owns anything.
+    """
+    account = panel.cfg["name"]
+    users = panel_users(panel)
+
+    if not requested:
+        if len(users) > 1:
+            print("ERROR: account %s sees several panel users — say who will own this with "
+                  "--owner (login, user id or account name)." % account, file=sys.stderr)
+            print("Ask the user which panel user it is; do not pick one yourself. Panel users:",
+                  file=sys.stderr)
+            for line in user_lines(panel):
+                print("  " + line, file=sys.stderr)
+            sys.exit(OWNER_NEEDED)
+        found = users[0] if users else {"id": own_user_id(panel)}
+    else:
+        wanted = str(requested).strip()
+        for acc in load_config():  # a configured account name stands for its login
+            if wanted == acc["name"] and acc.get("login"):
+                wanted = str(acc["login"])
+                break
+        found = None
+        for user in users:
+            if wanted == user_login(user) or wanted == str(user.get("id")):
+                found = user
+                break
+        if not found:
+            die("panel user %r is not among those account %s sees. Panel users:\n  %s"
+                % (requested, account, "\n  ".join(user_lines(panel))))
+
+    if is_admin_user(found):
+        die("nothing may be created under the panel administrator itself — "
+            "pick an ordinary panel user for --owner")
+    if not isinstance(found.get("id"), int):
+        die("the panel gave no numeric id for the chosen owner")
+    return found["id"]
+
+
+def owner_id_of(obj):
+    """Owner of a site or database as the panel reports it: a nested object,
+    a bare id or an owner_id field."""
+    owner = obj.get("owner")
+    if isinstance(owner, dict):
+        owner = owner.get("id")
+    if owner is None:
+        owner = obj.get("owner_id")
+    if isinstance(owner, str) and owner.isdigit():
+        owner = int(owner)
+    return owner if isinstance(owner, int) else None
+
+
+def site_of_owner(panel, domain, owner_id):
+    """Id of the site with this domain — after making sure it belongs to owner_id.
+
+    A database and the site it is attached to must have the same owner.
+    """
+    for site in all_sites(panel):
+        if domain not in site_names(site):
+            continue
+        site_owner = owner_id_of(site)
+        if site_owner is None:
+            status, data = panel.call("GET", "/sites/%s" % site.get("id"))
+            detail = data.get("data") if status == 200 and isinstance(data, dict) else None
+            site_owner = owner_id_of(detail) if isinstance(detail, dict) else None
+        if site_owner is None and len(panel_users(panel)) <= 1:
+            site_owner = owner_id  # this account sees nobody's sites but its own
+        if site_owner is None:
+            die("cannot tell who owns site %s (id %s) — the panel does not say; "
+                "not attaching a database to it" % (domain, site.get("id")))
+        if site_owner != owner_id:
+            die("site %s (id %s) belongs to panel user id %s, the database would belong to "
+                "user id %s — they must have the same owner. Ask the user: another site or "
+                "another owner." % (domain, site.get("id"), site_owner, owner_id))
+        return site.get("id")
+    die("site %s not found under this panel account" % domain)
 
 
 def all_sites(panel):
@@ -450,6 +724,13 @@ def add_account_arg(parser):
     return parser
 
 
+def add_owner_arg(parser):
+    parser.add_argument("--owner", metavar="USER",
+                        help="panel user to own it: login, user id or account name; "
+                             "required when the account sees several panel users")
+    return parser
+
+
 def panel_for(args):
     """Resolve the account, log in, hand back a ready Panel."""
     cfg = read_credentials(getattr(args, "account", None))
@@ -459,7 +740,7 @@ def panel_for(args):
 
 
 def run(main):
-    """Entry point wrapper: no traceback ever carries a password out."""
+    """Entry point wrapper: no traceback ever carries a credential out."""
     try:
         sys.exit(main())
     except KeyboardInterrupt:

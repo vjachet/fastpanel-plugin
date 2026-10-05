@@ -8,19 +8,41 @@ Root и админ панели не нужны.
 
 | Скилл | Что умеет |
 |---|---|
-| `fastpanel-accounts` | какие аккаунты панели настроены; кто мы на панели (user id, home, владелец, квота) |
+| `fastpanel-accounts` | какие аккаунты панели настроены; кто мы на панели (user id, home, id владельца, квота) |
 | `fastpanel-sites` | список сайтов с их id; подробности одного сайта; создание сайта (PHP модулем Apache или FastCGI с выбором версии, статика или обратный прокси для Node.js) с выбором IP, сжатия, кеша статики и логов, с сертификатом Let's Encrypt; смена обработчика и версии PHP; довыпуск сертификата, когда DNS готов |
 | `fastpanel-db` | список баз; серверы БД и кодировки; идемпотентное создание базы с пользователем и привязкой к сайту |
 
 Общее ядро — `plugins/fastpanel/lib/fastpanel_api.py`: конфиг, логин, кеш токена, разбор
 ошибок панели. Новый инструмент добавляется маленьким скриптом поверх него.
 
-## Пароль панели
+## Логин, пароль и токен панели
 
-Пароль лежит **только** в локальном файле с правами `600` и уходит **только** на `/login`
-твоей панели. Ни в аргументах команд, ни в выводе, ни в переписке с Claude он не появляется —
-скрипты читают его сами, и все сообщения об ошибках проходят через скрабер. Файл вне
-репозиториев, так что случайно не уедет в git или на сервер.
+Логин и пароль лежат **только** в локальном файле с правами `600` и уходят **только** на
+`/login` твоей панели; полученный токен — только в кеше `~/.cache/fastpanel/` (`600`). Ни в
+аргументах команд, ни в выводе, ни в переписке с Claude они не появляются: скрипты читают их
+сами, а весь их вывод (stdout и stderr) проходит через скрабер, который заменяет логин,
+пароль и токен на `***`. Файл вне репозиториев, так что случайно не уедет в git или на сервер.
+
+Скрабер режет логин везде, в том числе в данных самой панели: корень сайта выглядит как
+`/var/www/***/data/www/...`, база `<логин>_main` — как `***_main`. Короткий логин может
+замазать совпадающий кусок домена.
+
+Агенту закрыт и прямой доступ: хук плагина (`plugins/fastpanel/hooks/guard.py`) отклоняет
+Read/Edit/Write/Grep/Glob и shell-команды, которые лезут в `~/.config/fastpanel/` и
+`~/.cache/fastpanel/` или подключают ядро в обход скриптов. Панель принимается только по
+`https`, редиректы не выполняются. Выключателя у скрабера и хука нет.
+
+Чего хук не гарантирует: shell-команду он видит как текст и ловит по шаблонам, а агент
+работает под тем же пользователем ОС, которому принадлежит файл. Прямые обращения закрыты,
+изощрённый обход — нет. Жёсткая граница — только на уровне ОС.
+
+## Владелец сайта и базы
+
+Аккаунт, который видит только себя, создаёт под собой. Аккаунт, который видит нескольких
+пользователей панели (администратор `fastpanel`), обязан назвать владельца: `--owner` (логин,
+id или имя аккаунта), иначе код 4 и список пользователей. От имени самого `fastpanel` ничего
+не создаётся. База создаётся только с `--site`, и сайт должен принадлежать тому же
+пользователю, что и база.
 
 ## Установка
 
@@ -33,7 +55,7 @@ Root и админ панели не нужны.
 и проверки — в [INSTALL.md](INSTALL.md). Сборка архива для передачи:
 
 ```bash
-git archive --format=tar.gz --prefix=fastpanel-plugin/ -o dist/fastpanel-plugin-2.2.0.tar.gz HEAD
+git archive --format=tar.gz --prefix=fastpanel-plugin/ -o dist/fastpanel-plugin-3.0.0.tar.gz HEAD
 ```
 
 ## Настройка доступов
@@ -48,7 +70,7 @@ cat > ~/.config/fastpanel/config.json <<'JSON'
   "url": "panel.example.com",
   "accounts": [
     {"login": "user1", "password": "secret1", "label": "рабочий"},
-    {"login": "user2", "password": "secret2"}
+    {"login": "user2", "password": "secret2", "name": "second"}
   ]
 }
 JSON
@@ -57,8 +79,9 @@ chmod 600 ~/.config/fastpanel/config.json
 
 `url` — хост панели, как набираешь его в браузере. `https://` подставляется само, `/api`
 скрипты дописывают сами, одинаково для всех панелей; нестандартный порт — прямо в хосте
-(`panel.example.com:8888`). Аккаунт называется своим логином; хочешь короче — добавь
-`"name": "work"`. У панели самоподписанный сертификат — `"insecure": true`. Вторая панель —
+(`panel.example.com:8888`). Логином аккаунт не называется: скрипт сам даёт ему имя-хеш вида
+`acc-1a2b3c4d` (видно в `fastpanel_accounts.py list`), оно идёт в `-A` и в имена файлов.
+Своё имя — полем `"name"`, только не логин и без логина внутри. У панели самоподписанный сертификат — `"insecure": true`. Вторая панель —
 задай аккаунту свой `"url"`. Другой путь к файлу — переменная `FASTPANEL_CONFIG`.
 
 Файла нет — скрипт при запуске сам печатает путь, команды создания и пример содержимого.
@@ -69,7 +92,7 @@ chmod 600 ~/.config/fastpanel/config.json
 find ~/.claude/plugins -name fastpanel_accounts.py -exec python3 {} list \;
 ```
 
-Пароли эта команда не печатает — только имя аккаунта, URL панели, логин и метку.
+Логины и пароли эта команда не печатает — только имя аккаунта, URL панели и метку.
 
 ## Использование
 
@@ -87,7 +110,9 @@ python3 $P/fastpanel-sites/scripts/fastpanel_sites.py backend shop.example.com -
 python3 $P/fastpanel-sites/scripts/fastpanel_sites.py ssl shop.example.com -A work
 python3 $P/fastpanel-db/scripts/fastpanel_db.py servers -A work
 python3 $P/fastpanel-db/scripts/fastpanel_db.py add shop_main -A work --site shop.example.com
-python3 $P/fastpanel-db/scripts/fastpanel_db.py add analytics -A work --server pg15 --charset cp1251
+python3 $P/fastpanel-db/scripts/fastpanel_db.py add analytics -A work --site shop.example.com --server pg15 --charset cp1251
+python3 $P/fastpanel-accounts/scripts/fastpanel_accounts.py users -A root
+python3 $P/fastpanel-sites/scripts/fastpanel_sites.py add new.example.com -A root --owner work
 ```
 
 Если аккаунт один — `-A` можно не писать. Если несколько и ни у кого нет
@@ -124,6 +149,7 @@ DB_PASSWORD=...
 | 0 | сделано (или уже было сделано раньше) |
 | 1 | ошибка: нет доступов, кривые права на файл, не выбран аккаунт, не вышел логин, панель отказала |
 | 3 | имя базы занято другим пользователем панели — нужен выбор пользователя |
+| 4 | аккаунт видит нескольких пользователей панели, владелец (`--owner`) не назван |
 
 ## Структура
 
@@ -131,7 +157,8 @@ DB_PASSWORD=...
 .claude-plugin/marketplace.json
 plugins/fastpanel/
   .claude-plugin/plugin.json
-  SETUP.md                     общее описание конфига и правил с паролем
+  hooks/hooks.json, guard.py   хук: агенту нет хода к доступам и кешу токена
+  SETUP.md                     общее описание конфига и правил с логином, паролем и токеном
   lib/fastpanel_api.py         конфиг, логин, http, разбор ошибок
   skills/fastpanel-accounts/   SKILL.md + scripts/fastpanel_accounts.py
   skills/fastpanel-sites/      SKILL.md + scripts/fastpanel_sites.py

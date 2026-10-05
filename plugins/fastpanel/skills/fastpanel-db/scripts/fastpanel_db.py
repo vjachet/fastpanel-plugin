@@ -100,22 +100,11 @@ def find_database(panel, name):
     return None
 
 
-def db_name_prefix(login):
-    """Panels usually name a user's databases <login>_<something>."""
-    prefix = fp.re.sub(r"[^A-Za-z0-9]", "", login).lower()
-    return prefix[:8]
-
-
-def suggest_names(panel, name, login, count=3):
+def suggest_names(panel, name, count=3):
     """Names to offer when the wanted one is taken by another panel user."""
     taken = {db.get("name") for db in all_databases(panel)}
-    prefix = db_name_prefix(login)
-    candidates = []
-    if prefix and not name.startswith(prefix + "_"):
-        candidates.append("%s_%s" % (prefix, name))
-    candidates.extend("%s%d" % (name, n) for n in range(2, 2 + count))
-    if prefix:
-        candidates.extend("%s_%s%d" % (prefix, name, n) for n in range(2, 2 + count))
+    # numbered only: a login prefix would put the panel login into the output
+    candidates = ["%s%d" % (name, n) for n in range(2, 2 + count + len(taken))]
     out = []
     for cand in candidates:
         if cand != name and cand not in taken and cand not in out:
@@ -184,10 +173,8 @@ def cmd_list(args):
     width = max(len(str(db.get("name", ""))) for db in rows)
     for db in sorted(rows, key=lambda d: str(d.get("name", ""))):
         server = db.get("server") or {}
-        owner = db.get("owner") or {}
-        print("%-*s  %s:%s  %s" % (width, db.get("name", "?"), server.get("type", "?"),
-                                   server.get("port", "?"),
-                                   owner.get("username") or owner.get("login") or ""))
+        print("%-*s  %s:%s" % (width, db.get("name", "?"), server.get("type", "?"),
+                               server.get("port", "?")))
     return 0
 
 
@@ -214,8 +201,13 @@ def cmd_add(args):
 
     check_charset(panel, args.charset)
     server = pick_server(db_servers(panel), args.server)
-    owner_id = fp.own_user_id(panel)
+    owner_id = fp.resolve_owner(panel, args.owner)
+    # The panel wants the numeric site id, as its own UI sends it. The site is
+    # checked before anything is created: same owner as the database, or no go.
+    site_id = fp.site_of_owner(panel, args.site.strip().lower().rstrip("."), owner_id)
     db_user = args.db_user or args.name
+    fp.announce(panel, "create database %s on %s:%s for site %s"
+                % (args.name, server.get("type"), server_port(server), args.site), owner_id)
     db_pass = fp.gen_password()
 
     body = {
@@ -224,10 +216,8 @@ def cmd_add(args):
         "owner_id": owner_id,
         "server_id": server["id"],
         "user": {"login": db_user, "password": db_pass},
+        "site": site_id,
     }
-    if args.site:
-        # The panel wants the numeric site id here, as its own UI sends it.
-        body["site"] = fp.find_site_id(panel, args.site)
 
     status, data = panel.call("POST", "/databases", body)
     if not (isinstance(data, dict) and (data.get("data") or {}).get("id")):
@@ -236,7 +226,7 @@ def cmd_add(args):
             # in our own list — it belongs to another panel user, so we have no
             # credentials for it and must not touch it. Offer free names instead
             # of picking one: renaming is the user's call.
-            hints = suggest_names(panel, args.name, panel.cfg["login"])
+            hints = suggest_names(panel, args.name)
             if sys.stdin.isatty() and not args.no_prompt:
                 chosen = choose_name(args.name, hints)
                 if not chosen:
@@ -253,8 +243,9 @@ def cmd_add(args):
             return NAME_TAKEN
         fp.die("create failed (HTTP %s): %s" % (status, fp.panel_error(data)))
 
-    print("created: database %s on %s:%s, account %s, owner id %s"
-          % (args.name, server.get("type"), server_port(server), account, owner_id))
+    print("created: database %s on %s:%s, account %s, owner id %s, site %s (id %s)"
+          % (args.name, server.get("type"), server_port(server), account, owner_id,
+             args.site, site_id))
 
     # The panel creates the database asynchronously — confirm it really landed.
     deadline = time.time() + args.wait
@@ -289,11 +280,13 @@ def main():
     p = sub.add_parser("add", help="create a database if it does not exist yet")
     p.add_argument("name", help="database name")
     fp.add_account_arg(p)
+    fp.add_owner_arg(p)
     p.add_argument("--db-user", help="database user login (default: same as the database name)")
     p.add_argument("--server", default="mysql", choices=("mysql", "pg", "pg15"),
                    help="database server (default: mysql)")
     p.add_argument("--charset", default="utf8mb4", help="database charset (default: utf8mb4)")
-    p.add_argument("--site", metavar="DOMAIN", help="attach the database to this site")
+    p.add_argument("--site", metavar="DOMAIN", required=True,
+                   help="site the database belongs to; must have the same owner")
     p.add_argument("--wait", type=int, default=60,
                    help="seconds to wait for the database to appear (default: 60)")
     p.add_argument("--no-prompt", action="store_true",

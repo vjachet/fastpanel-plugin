@@ -37,11 +37,9 @@ def cmd_show(args):
     panel = fp.panel_for(args)
     for site in fp.all_sites(panel):
         if args.domain in fp.site_names(site):
-            owner = site.get("owner") or {}
             print("domain:   %s (id %s)" % (site.get("domain"), site.get("id")))
             print("aliases:  %s" % (", ".join(sorted(fp.site_names(site) - {site.get("domain")})) or "—"))
             print("root:     %s" % site.get("index_dir", "?"))
-            print("owner:    %s" % (owner.get("username") or owner.get("login") or "?"))
             print("enabled:  %s" % site.get("enabled"))
             print("ssl:      %s" % ("yes" if site.get("certificate") else "no"))
             print("ips:      %s" % (", ".join(ip_value(i) for i in (site.get("ips") or [])) or "?"))
@@ -403,6 +401,7 @@ def cmd_ssl(args):
     site_id = fp.find_site_id(panel, domain)
     if not site_id:
         fp.die("site %s not found under this panel account" % domain)
+    fp.announce(panel, "issue a let's encrypt certificate for site %s" % domain)
     site = wait_for_site(panel, domain, site_id)
     main = site.get("domain")
     aliases = sorted(fp.site_names(site) - {main})
@@ -458,6 +457,7 @@ def cmd_backend(args):
     domain = args.domain.strip().lower().rstrip(".")
     panel = fp.panel_for(args)
     site_id = fp.find_site_id(panel, domain)
+    fp.announce(panel, "switch the php backend of site %s" % domain)
     site = wait_for_site(panel, domain, site_id)
     current = read_backend(panel, site_id)
     cur_type = current.get("type")
@@ -522,7 +522,9 @@ def cmd_add(args):
                   % (domain, site.get("id"), site.get("domain")))
             return 0
 
+    owner_id = fp.resolve_owner(panel, args.owner)
     resolve_choices(args, panel)
+    fp.announce(panel, "create site %s (%s)" % (domain, backend_label(args)), owner_id)
 
     aliases = [] if args.no_www else ["www." + domain]
     aliases += [a.strip().lower() for a in args.alias or [] if a.strip()]
@@ -545,7 +547,7 @@ def cmd_add(args):
         "email_domain": False,
         "ips": [{"ip": ip} for ip in args.ip],
         "dns_domain": None,
-        "owner": fp.own_user_id(panel),
+        "owner": owner_id,
         "ssh_access": None,
         "user": None,
         "database": None,
@@ -683,6 +685,7 @@ def main():
     p.add_argument("--no-prompt", action="store_true",
                    help="never ask on a terminal; unset options take the defaults")
     fp.add_account_arg(p)
+    fp.add_owner_arg(p)
     p.set_defaults(func=cmd_add)
 
     args = ap.parse_args()

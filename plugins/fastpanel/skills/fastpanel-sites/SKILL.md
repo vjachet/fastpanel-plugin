@@ -1,6 +1,6 @@
 ---
 name: fastpanel-sites
-description: List, inspect and create sites on a FastPanel/FluxPanel account (id, aliases, document root, owner, SSL, ips; new PHP, static or reverse-proxy (node.js) site with backend, php version, ip, gzip, static cache, log settings and a Let's Encrypt certificate). Use when asked what sites are on the panel, "какие сайты на панели", "покажи сайт example.com", "создай сайт", "добавь сайт example.com", "довыпусти сертификат", "перевыпусти SSL", "смени версию PHP", "поменяй обработчик", or when a site id or document root is needed for another task.
+description: List, inspect and create sites on a FastPanel/FluxPanel account (id, aliases, document root, SSL, ips; new PHP, static or reverse-proxy (node.js) site with backend, php version, ip, gzip, static cache, log settings and a Let's Encrypt certificate). Use when asked what sites are on the panel, "какие сайты на панели", "покажи сайт example.com", "создай сайт", "добавь сайт example.com", "довыпусти сертификат", "перевыпусти SSL", "смени версию PHP", "поменяй обработчик", or when a site id or document root is needed for another task.
 ---
 
 # fastpanel-sites — сайты аккаунта панели
@@ -17,10 +17,21 @@ python3 "$SCRIPT" ssl DOMAIN [-A ИМЯ]        # довыпустить сер�
 ```
 
 `list` печатает домен, `id` и пометки: `disabled`, `ssl`, `errors:N`.
-`show` ищет домен и среди алиасов, печатает id, алиасы, корень сайта, владельца,
+`show` ищет домен и среди алиасов, печатает id, алиасы, корень сайта,
 включён ли, есть ли сертификат, ip и дату создания.
 
 ## Создание сайта
+
+**Сначала скажи, где.** До запуска команды, которая что-то создаёт или меняет, явно напиши
+пользователю: сервер (адрес панели), аккаунт, владелец и что будет сделано. Подробно —
+`${CLAUDE_PLUGIN_ROOT}/SETUP.md`, раздел «Сначала скажи, где».
+
+**Сначала владелец.** Если аккаунт видит несколько пользователей панели (администратор
+`fastpanel`), обязательно спроси пользователя, от чьего имени создаётся сайт, и передай
+`--owner` (логин, id или имя аккаунта; список — `fastpanel_accounts.py users -A ИМЯ`). Без
+`--owner` скрипт выйдет с кодом **4** и напечатает список — покажи его вариантами и спроси,
+сам не выбирай. От имени самого `fastpanel` сайт не создаётся. Аккаунт, который видит только
+себя, создаёт под собой — спрашивать не нужно, `--owner` не нужен.
 
 Перед `add` запусти `options`: он печатает IP сервера, установленные версии PHP с
 доступными обработчиками и значения по умолчанию. Покажи пользователю выбор
@@ -96,13 +107,16 @@ python3 "$SCRIPT" ssl DOMAIN [-A ИМЯ]        # довыпустить сер�
 на `admin@DOMAIN`, привязывает к сайту и включает HTTPS, как `add`. Старый сертификат
 остаётся в панели. Код `0` — покрыто или выпущено, `1` — не вышло (строка `ssl:`).
 
-Коды выхода: `0` — создан или уже был; `1` — ошибка; `3` — домен занят другим пользователем.
+Коды выхода: `0` — создан или уже был; `1` — ошибка; `3` — домен занят другим пользователем;
+`4` — аккаунт видит нескольких пользователей панели, а `--owner` не задан.
 
 Эндпоинты: `GET /api/sites/list?filter[...]`, `GET /api/sites/simple`, `GET /api/sites/<id>`,
 `GET /api/settings` (версии PHP: `configuration.php_version`, IP: `ips`), `GET /api/me`,
 `POST /api/master/domain`, `PUT /api/master`, `PUT /api/sites/<id>`, `GET|PUT /api/sites/backend/<id>`,
 `GET|PUT /api/sites/<id>/log_rotate`, `POST /api/certificates`, `GET /api/certificates/<id>`. Алиасы в объекте сайта — `aliases[].name`. `GET /api/sites` не существует.
 
-Доступы и правила обращения с паролем: `${CLAUDE_PLUGIN_ROOT}/SETUP.md`. Коротко: один файл
-`~/.config/fastpanel/config.json` (`600`), **читать его нельзя**, пароль в чат не попадает.
+Доступы и правила обращения с логином, паролем и токеном: `${CLAUDE_PLUGIN_ROOT}/SETUP.md`.
+Коротко: один файл `~/.config/fastpanel/config.json` (`600`), **читать его и кеш токена
+`~/.cache/fastpanel/` нельзя**; логин, пароль и токен в чат не попадают — в выводе они
+заменены на `***` (корень сайта: `/var/www/***/data/www/...`).
 Если настроено несколько аккаунтов и не сказано, какой брать, — спроси.
