@@ -62,7 +62,7 @@ Read/Edit/Write/Grep/Glob и shell-команды, которые лезут в 
 и проверки — в [INSTALL.md](INSTALL.md). Сборка архива для передачи:
 
 ```bash
-git archive --format=tar.gz --prefix=fastpanel-plugin/ -o dist/fastpanel-plugin-3.0.0.tar.gz HEAD
+git archive --format=tar.gz --prefix=fastpanel-plugin/ -o dist/fastpanel-plugin-4.0.0.tar.gz HEAD
 ```
 
 ## Настройка доступов

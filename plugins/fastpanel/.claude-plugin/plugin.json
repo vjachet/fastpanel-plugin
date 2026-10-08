@@ -1,7 +1,7 @@
 {
   "name": "fastpanel",
   "description": "FastPanel/FluxPanel tooling: accounts, ordinary user creation, sites, databases and DNS. No root required; creating users requires panel permission. Passwords stay in local 0600 files and never reach the model.",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "author": {
     "name": "viachet"
   },
