@@ -1,9 +1,9 @@
 {
   "name": "fastpanel",
-  "description": "Tools for working with a FastPanel/FluxPanel server from an agent: accounts, sites, databases. Everything runs as an ordinary panel user — no root, no panel admin — and the panel password never leaves the local 0600 credentials file",
+  "description": "FastPanel/FluxPanel tooling: accounts, ordinary user creation, sites, databases and DNS. No root required; creating users requires panel permission. Passwords stay in local 0600 files and never reach the model.",
   "version": "3.0.0",
   "author": {
     "name": "viachet"
   },
-  "keywords": ["fastpanel", "fluxpanel", "hosting", "database", "mysql", "postgresql", "sites"]
+  "keywords": ["fastpanel", "fluxpanel", "hosting", "database", "mysql", "postgresql", "sites", "users", "dns"]
 }

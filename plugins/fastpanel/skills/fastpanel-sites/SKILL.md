@@ -1,6 +1,6 @@
 ---
 name: fastpanel-sites
-description: List, inspect and create sites on a FastPanel/FluxPanel account (id, aliases, document root, SSL, ips; new PHP, static or reverse-proxy (node.js) site with backend, php version, ip, gzip, static cache, log settings and a Let's Encrypt certificate). Use when asked what sites are on the panel, "какие сайты на панели", "покажи сайт example.com", "создай сайт", "добавь сайт example.com", "довыпусти сертификат", "перевыпусти SSL", "смени версию PHP", "поменяй обработчик", or when a site id or document root is needed for another task.
+description: List, inspect, create and delete sites on a FastPanel/FluxPanel account (id, aliases, document root, SSL, ips; new PHP, static or reverse-proxy (node.js) site with backend, php version, ip, gzip, static cache, log settings and a Let's Encrypt certificate; what is attached to a site; deleting a site with or without its databases, DNS domains, mail domains and subdomains). Use when asked what sites are on the panel, "какие сайты на панели", "покажи сайт example.com", "создай сайт", "добавь сайт example.com", "довыпусти сертификат", "перевыпусти SSL", "смени версию PHP", "поменяй обработчик", "удали сайт", "что привязано к сайту", or when a site id or document root is needed for another task.
 ---
 
 # fastpanel-sites — сайты аккаунта панели
@@ -8,12 +8,14 @@ description: List, inspect and create sites on a FastPanel/FluxPanel account (id
 ```bash
 SCRIPT="${CLAUDE_PLUGIN_ROOT}/skills/fastpanel-sites/scripts/fastpanel_sites.py"
 
-python3 "$SCRIPT" list [-A ИМЯ]              # домены и их site id
-python3 "$SCRIPT" show DOMAIN [-A ИМЯ]       # подробности одного сайта
-python3 "$SCRIPT" options [-A ИМЯ]           # из чего выбирать при создании
-python3 "$SCRIPT" add DOMAIN [опции] [-A ИМЯ] --no-prompt   # создать сайт
-python3 "$SCRIPT" backend DOMAIN --handler H --php V [-A ИМЯ] --no-prompt  # сменить обработчик/версию PHP
-python3 "$SCRIPT" ssl DOMAIN [-A ИМЯ]        # довыпустить сертификат, когда DNS готов
+python3 "$SCRIPT" list [-A ID_АККАУНТА]              # домены и их site id
+python3 "$SCRIPT" show DOMAIN [-A ID_АККАУНТА]       # подробности одного сайта
+python3 "$SCRIPT" options [-A ID_АККАУНТА]           # из чего выбирать при создании
+python3 "$SCRIPT" add DOMAIN [опции] [-A ID_АККАУНТА] --no-prompt   # создать сайт
+python3 "$SCRIPT" backend DOMAIN --handler H --php V [-A ID_АККАУНТА] --no-prompt  # сменить обработчик/версию PHP
+python3 "$SCRIPT" ssl DOMAIN [-A ID_АККАУНТА]        # довыпустить сертификат, когда DNS готов
+python3 "$SCRIPT" resources DOMAIN [-A ID_АККАУНТА]  # что привязано к сайту: базы, DNS, почта, поддомены
+python3 "$SCRIPT" delete DOMAIN [что ещё удалить] [--confirm КОД] [-A ID_АККАУНТА]   # удалить сайт
 ```
 
 `list` печатает домен, `id` и пометки: `disabled`, `ssl`, `errors:N`.
@@ -23,12 +25,12 @@ python3 "$SCRIPT" ssl DOMAIN [-A ИМЯ]        # довыпустить сер�
 ## Создание сайта
 
 **Сначала скажи, где.** До запуска команды, которая что-то создаёт или меняет, явно напиши
-пользователю: сервер (адрес панели), аккаунт, владелец и что будет сделано. Подробно —
+пользователю: id аккаунта, владелец и что будет сделано. Подробно —
 `${CLAUDE_PLUGIN_ROOT}/SETUP.md`, раздел «Сначала скажи, где».
 
 **Сначала владелец.** Если аккаунт видит несколько пользователей панели (администратор
 `fastpanel`), обязательно спроси пользователя, от чьего имени создаётся сайт, и передай
-`--owner` (логин, id или имя аккаунта; список — `fastpanel_accounts.py users -A ИМЯ`). Без
+`--owner` (только числовой id пользователя; список — `fastpanel_accounts.py users -A ID_АККАУНТА`). Без
 `--owner` скрипт выйдет с кодом **4** и напечатает список — покажи его вариантами и спроси,
 сам не выбирай. От имени самого `fastpanel` сайт не создаётся. Аккаунт, который видит только
 себя, создаёт под собой — спрашивать не нужно, `--owner` не нужен.
@@ -107,13 +109,45 @@ python3 "$SCRIPT" ssl DOMAIN [-A ИМЯ]        # довыпустить сер�
 на `admin@DOMAIN`, привязывает к сайту и включает HTTPS, как `add`. Старый сертификат
 остаётся в панели. Код `0` — покрыто или выпущено, `1` — не вышло (строка `ssl:`).
 
+## Удаление сайта
+
+`delete DOMAIN` — кнопка «Удалить» сайта в панели (`PUT /api/sites/<id>/delete`). Удаление
+необратимо: файлы сайта панель стирает. `DOMAIN` — только основной домен сайта; по алиасу
+скрипт не удаляет и говорит, чей это алиас.
+
+**Перед каждым удалением — проверка, это обязательно.** Без `--confirm` скрипт ничего не
+трогает: печатает сервер, аккаунт, владельца, корень сайта, привязанные ресурсы
+(`GET /api/sites/<id>/resources`, то же, что `resources`), что было бы удалено, и код
+подтверждения. Покажи этот вывод пользователю — по каждому сайту, с названиями привязанных
+баз, DNS-доменов, почтовых доменов и поддоменов — и спроси одним вопросом, что удалять
+вместе с сайтом. Удаляй только после его ответа: та же команда с `--confirm КОД`.
+
+Код привязан к сайту, его привязанным ресурсам и выбранным флагам. Если что-то из этого
+изменилось после показа, скрипт откажет — запусти показ заново и снова спроси. Сам галочки
+не выбирай. Согласие «удаляй всё», данное до показа, не считается: привязанную базу
+пользователь мог не иметь в виду. При удалении нескольких сайтов показ делается для
+каждого, до первого удаления.
+
+| Флаг | Что удаляется вместе с сайтом | Поле запроса |
+|---|---|---|
+| `--databases` | базы сайта | `remove_databases` |
+| `--dns` | DNS-домены сайта в панели; зона у DNS-провайдера остаётся | `remove_dns_domains` |
+| `--dns-provider` | DNS-домены сайта и их зоны у DNS-провайдера (включает `--dns`) | `remove_dns_domains_from_provider` |
+| `--mail` | почтовые домены сайта | `remove_email_domains` |
+| `--subdomains` | сайты-поддомены | `remove_sub_domains` |
+
+Без флагов удаляется только сам сайт. DNS-домен, оставленный без `--dns`, остаётся в панели
+без сайта (`site id —` в `fastpanel-dns list`). С `--confirm` скрипт ждёт, пока сайт исчезнет из
+списка (`--wait N`, по умолчанию 180 секунд), и печатает `deleted:`.
+
 Коды выхода: `0` — создан или уже был; `1` — ошибка; `3` — домен занят другим пользователем;
 `4` — аккаунт видит нескольких пользователей панели, а `--owner` не задан.
 
 Эндпоинты: `GET /api/sites/list?filter[...]`, `GET /api/sites/simple`, `GET /api/sites/<id>`,
 `GET /api/settings` (версии PHP: `configuration.php_version`, IP: `ips`), `GET /api/me`,
 `POST /api/master/domain`, `PUT /api/master`, `PUT /api/sites/<id>`, `GET|PUT /api/sites/backend/<id>`,
-`GET|PUT /api/sites/<id>/log_rotate`, `POST /api/certificates`, `GET /api/certificates/<id>`. Алиасы в объекте сайта — `aliases[].name`. `GET /api/sites` не существует.
+`GET|PUT /api/sites/<id>/log_rotate`, `POST /api/certificates`, `GET /api/certificates/<id>`, `GET /api/sites/<id>/resources`,
+`PUT /api/sites/<id>/delete`. Алиасы в объекте сайта — `aliases[].name`. `GET /api/sites` не существует.
 
 Доступы и правила обращения с логином, паролем и токеном: `${CLAUDE_PLUGIN_ROOT}/SETUP.md`.
 Коротко: один файл `~/.config/fastpanel/config.json` (`600`), **читать его и кеш токена

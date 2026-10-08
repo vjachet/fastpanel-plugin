@@ -11,9 +11,9 @@ description: Databases on a FastPanel/FluxPanel server from a panel user's own a
 ```bash
 SCRIPT="${CLAUDE_PLUGIN_ROOT}/skills/fastpanel-db/scripts/fastpanel_db.py"
 
-python3 "$SCRIPT" list [-A ИМЯ]              # базы, видимые аккаунту
-python3 "$SCRIPT" servers [-A ИМЯ]           # серверы БД и доступные кодировки
-python3 "$SCRIPT" add ИМЯ --site ДОМЕН [-A ИМЯ] [--owner КТО] [опции]   # создать базу, если её нет
+python3 "$SCRIPT" list [-A ID_АККАУНТА]              # базы, видимые аккаунту
+python3 "$SCRIPT" servers [-A ID_АККАУНТА]           # серверы БД и доступные кодировки
+python3 "$SCRIPT" add ИМЯ --site ДОМЕН [-A ID_АККАУНТА] [--owner КТО] [опции]   # создать базу, если её нет
 ```
 
 Опции `add`:
@@ -21,7 +21,7 @@ python3 "$SCRIPT" add ИМЯ --site ДОМЕН [-A ИМЯ] [--owner КТО] [о�
 | Опция | Значение |
 |---|---|
 | `--site DOMAIN` | **обязательно**: сайт, к которому привязана база (панели передаётся числовой site id); сайт и база должны принадлежать одному пользователю панели |
-| `--owner USER` | от чьего имени создать: логин пользователя панели, его id или имя аккаунта; обязателен, если аккаунт видит нескольких пользователей панели |
+| `--owner USER_ID` | числовой id владельца; обязателен, если аккаунт видит нескольких пользователей панели |
 | `--db-user LOGIN` | логин пользователя БД (по умолчанию — имя базы) |
 | `--server mysql\|pg\|pg15` | сервер БД; `pg15` определяется по порту 5433 (по умолчанию `mysql`) |
 | `--charset CS` | кодировка: `utf8mb4` (по умолчанию), `utf8`, `cp1251`, `latin1` — список берётся из `GET /api/charsets` и проверяется до создания |
@@ -33,13 +33,13 @@ python3 "$SCRIPT" add ИМЯ --site ДОМЕН [-A ИМЯ] [--owner КТО] [о�
 ```bash
 python3 "$SCRIPT" add shop_main -A work --site shop.example.com
 python3 "$SCRIPT" add analytics -A personal --site stats.example.com --server pg15
-python3 "$SCRIPT" add shop_main -A root --owner work --site shop.example.com
+python3 "$SCRIPT" add shop_main -A root --owner 93 --site shop.example.com
 ```
 
 ## Что спросить до `add`
 
 **Сначала скажи, где.** До запуска команды, которая что-то создаёт или меняет, явно напиши
-пользователю: сервер (адрес панели), аккаунт, владелец и что будет сделано. Подробно —
+пользователю: id аккаунта, владелец и что будет сделано. Подробно —
 `${CLAUDE_PLUGIN_ROOT}/SETUP.md`, раздел «Сначала скажи, где».
 
 
@@ -103,4 +103,4 @@ python3 "$SCRIPT" add shop_main -A root --owner work --site shop.example.com
 `${CLAUDE_PLUGIN_ROOT}/SETUP.md`. Коротко: один файл `~/.config/fastpanel/config.json`
 (`600`), **читать его и кеш токена `~/.cache/fastpanel/` нельзя**; логин, пароль и токен в
 чат не попадают — в выводе они заменены на `***` (имя базы с логином: `***_main`).
-Если файла нет — скрипт печатает инструкцию по настройке, покажи её целиком и остановись.
+При ошибке настройки направь человека к INSTALL.md; диагностика остаётся локально, агент её не читает.

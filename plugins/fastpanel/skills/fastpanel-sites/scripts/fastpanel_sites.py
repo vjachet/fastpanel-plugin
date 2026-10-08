@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
-"""Sites of a panel account: list, show one, create one (php, static or reverse proxy)."""
+"""Sites of a panel account: list, show one, create one (php, static or reverse proxy),
+delete one."""
 
+import hashlib
+import json
 import os
 import re
 import socket
@@ -628,6 +631,120 @@ def cmd_add(args):
     return 0
 
 
+def main_domain_site(panel, name):
+    """The site whose main domain is exactly this name. An alias does not count:
+    deleting by alias would take down a site the user did not name."""
+    try:
+        domain = name.strip().lower().rstrip(".").encode("idna").decode("ascii")
+    except UnicodeError:
+        fp.die("%r is not a valid domain name" % name)
+    by_alias = None
+    for site in fp.all_sites(panel):
+        if site.get("domain") == domain:
+            return site
+        if domain in fp.site_names(site):
+            by_alias = site
+    if by_alias:
+        fp.die("%s is an alias of site %s (id %s), not a site of its own — name the site by "
+               "its main domain" % (domain, by_alias.get("domain"), by_alias.get("id")))
+    fp.die("site %s not found under this panel account" % domain)
+
+
+def site_resources(panel, site):
+    """GET /api/sites/<id>/resources — what the panel's "delete site" dialog lists."""
+    status, data = panel.call("GET", "/sites/%s/resources" % site["id"])
+    if status != 200:
+        fp.die("cannot read the resources of site %s (id %s, HTTP %s): %s"
+               % (site.get("domain"), site["id"], status, fp.panel_error(data)))
+    res = data.get("data") if isinstance(data, dict) and "data" in data else data
+    return res if isinstance(res, dict) else {"resources": res}
+
+
+def resource_name(item):
+    if not isinstance(item, dict):
+        return str(item)
+    for key in ("name", "domain", "login", "address"):
+        if item.get(key):
+            return "%s (id %s)" % (item[key], item.get("id", "?"))
+    return "id %s" % item.get("id", "?")
+
+
+def print_resources(res):
+    for key in sorted(res):
+        val = res[key]
+        if isinstance(val, list):
+            print("%-16s %s" % (key + ":", ", ".join(resource_name(i) for i in val) or "—"))
+        else:
+            print("%-16s %s" % (key + ":", val if val not in (None, "") else "—"))
+
+
+def cmd_resources(args):
+    panel = fp.panel_for(args)
+    site = main_domain_site(panel, args.domain)
+    print("site:            %s (id %s)" % (site.get("domain"), site.get("id")))
+    print("root:            %s" % site.get("index_dir", "?"))
+    print_resources(site_resources(panel, site))
+    return 0
+
+
+def delete_code(site_id, res, body):
+    """Ties a real delete to the dry run the user was shown: the code changes
+    when the attached resources or the ticks do."""
+    seen = json.dumps([site_id, res, body], sort_keys=True, default=str)
+    return hashlib.sha256(seen.encode()).hexdigest()[:8]
+
+
+def cmd_delete(args):
+    """The "delete" button of a site, with the ticks of its dialog. Not undoable."""
+    panel = fp.panel_for(args)
+    site = main_domain_site(panel, args.domain)
+    domain, site_id = site.get("domain"), site["id"]
+    dns = args.dns or args.dns_provider
+    removed = ["the site with its files"]
+    removed += ["its databases"] if args.databases else []
+    removed += ["its DNS domains" + (" and their zones at the DNS provider"
+                                     if args.dns_provider else "")] if dns else []
+    removed += ["its mail domains"] if args.mail else []
+    removed += ["its subdomain sites"] if args.subdomains else []
+
+    fp.announce(panel, "delete site %s (id %s): %s" % (domain, site_id, ", ".join(removed)),
+                fp.owner_id_of(site))
+    body = {
+        "remove_databases": args.databases,
+        "remove_dns_domains": dns,
+        "remove_email_domains": args.mail,
+        "remove_sub_domains": args.subdomains,
+        "remove_dns_domains_from_provider": args.dns_provider,
+    }
+    res = site_resources(panel, site)
+    print("root:            %s" % site.get("index_dir", "?"))
+    print_resources(res)
+    code = delete_code(site_id, res, body)
+    if not args.confirm:
+        print("dry run: nothing deleted. Show the lines above to the user; once they agree, "
+              "repeat the same command with --confirm %s" % code)
+        return 0
+    if args.confirm != code:
+        fp.die("--confirm %s does not match: the site's attached resources or the chosen "
+               "options differ from the dry run it came from. Run without --confirm again, "
+               "show the output to the user and ask" % args.confirm)
+
+    status, data = panel.call("PUT", "/sites/%s/delete" % site_id, body)
+    if status >= 300:
+        fp.die("delete of %s failed (HTTP %s): %s" % (domain, status, fp.panel_error(data)))
+
+    # Deletion is queued: wait for the site to leave the list.
+    deadline = time.time() + args.wait
+    while time.time() < deadline:
+        status, data = panel.call("GET", "/sites/simple")
+        if status == 200 and not any(s.get("id") == site_id for s in fp.unwrap(data)):
+            print("deleted: site %s (id %s): %s" % (domain, site_id, ", ".join(removed)))
+            return 0
+        time.sleep(3)
+    fp.die("delete of %s was submitted but the site is still listed after %ds — check the panel"
+           % (domain, args.wait))
+
+
 def main():
     ap = fp.argparse.ArgumentParser(description="FastPanel sites of a panel account")
     sub = ap.add_subparsers(dest="cmd")
@@ -658,6 +775,26 @@ def main():
     p.add_argument("domain")
     fp.add_account_arg(p)
     p.set_defaults(func=cmd_ssl)
+
+    p = sub.add_parser("resources", help="what is attached to a site: databases, dns, mail ...")
+    p.add_argument("domain")
+    fp.add_account_arg(p)
+    p.set_defaults(func=cmd_resources)
+
+    p = sub.add_parser("delete", help="delete a site; without --confirm only shows what would go")
+    p.add_argument("domain", help="main domain of the site, not an alias")
+    p.add_argument("--databases", action="store_true", help="delete the site's databases too")
+    p.add_argument("--dns", action="store_true", help="delete the site's DNS domains too")
+    p.add_argument("--dns-provider", action="store_true",
+                   help="delete the DNS domains and their zones at the DNS provider")
+    p.add_argument("--mail", action="store_true", help="delete the site's mail domains too")
+    p.add_argument("--subdomains", action="store_true", help="delete the site's subdomain sites too")
+    p.add_argument("--confirm", metavar="CODE",
+                   help="really delete: the code printed by the same command without --confirm")
+    p.add_argument("--wait", type=int, default=180,
+                   help="seconds to wait for the site to disappear (default: 180)")
+    fp.add_account_arg(p)
+    p.set_defaults(func=cmd_delete)
 
     p = sub.add_parser("add", help="create a site: php, static or reverse proxy")
     p.add_argument("domain")

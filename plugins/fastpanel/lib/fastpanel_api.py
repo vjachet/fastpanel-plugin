@@ -45,8 +45,7 @@ PAGE = 100  # the panel's own ui pages the list this way
 SECRETS = []  # passwords and tokens: scrubbed from any output, exact match
 LOGINS = []  # panel logins: scrubbed too, in any letter case
 
-# The administrator's login is the same on every panel, so it is no secret —
-# and scrubbing it would eat the word out of our own paths and script names.
+# Used only internally to recognize the built-in administrator.
 ADMIN_LOGIN = "fastpanel"
 OWNER_NEEDED = 4  # exit code: the account sees several panel users, the owner was not named
 
@@ -58,8 +57,26 @@ def scrub(text):
             out = out.replace(s, "***")
     for s in sorted(set(LOGINS), key=len, reverse=True):
         if s:
-            out = re.sub(re.escape(s), "***", out, flags=re.IGNORECASE)
+            variants = {s, json.dumps(s, ensure_ascii=True)[1:-1],
+                        urllib.parse.quote(s, safe="")}
+            for value in sorted(variants, key=len, reverse=True):
+                out = re.sub(re.escape(value), "***", out, flags=re.IGNORECASE)
     return out
+
+
+def remember_identities(value):
+    """Keep API identities in-process for output scrubbing, including all owners."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in ("username", "login") and isinstance(item, str) and item:
+                LOGINS.append(item)
+            elif key in ("password", "token") and isinstance(item, str) and item:
+                SECRETS.append(item)
+            remember_identities(item)
+    elif isinstance(value, list):
+        for item in value:
+            remember_identities(item)
+    return value
 
 
 class _Scrubbed:
@@ -67,9 +84,20 @@ class _Scrubbed:
 
     def __init__(self, stream):
         self._stream = stream
+        self._pending = ""
 
     def write(self, text):
-        return self._stream.write(scrub(text))
+        self._pending += text
+        while "\n" in self._pending:
+            line, self._pending = self._pending.split("\n", 1)
+            self._stream.write(scrub(line) + "\n")
+        return len(text)
+
+    def flush(self):
+        if self._pending:
+            self._stream.write(scrub(self._pending))
+            self._pending = ""
+        self._stream.flush()
 
     def writelines(self, lines):
         for line in lines:
@@ -83,8 +111,66 @@ sys.stdout = _Scrubbed(sys.stdout)
 sys.stderr = _Scrubbed(sys.stderr)
 
 
-def die(msg, code=1):
-    print("ERROR: " + scrub(msg), file=sys.stderr)
+def emit(result, stream=None):
+    """A bounded contract for account/user operations; no free-form metadata."""
+    allowed = {"status", "user_id", "user_ids", "owner_id", "owner_ids", "account_ids",
+               "key_ids", "ssh_ready", "reason", "code", "request_id"}
+    if set(result) - allowed:
+        raise ValueError("unsupported result fields")
+    for key in ("user_id", "owner_id"):
+        if key in result and (type(result[key]) is not int or result[key] <= 0):
+            raise ValueError("invalid result id")
+    for key in ("user_ids", "owner_ids", "key_ids"):
+        if key in result and (not isinstance(result[key], list) or
+                              any(type(v) is not int or v <= 0 for v in result[key])):
+            raise ValueError("invalid result ids")
+    if "account_ids" in result and (not isinstance(result["account_ids"], list) or
+                                   any(not isinstance(v, str) or not re.fullmatch(r"acc-[a-f0-9]{8}", v)
+                                       for v in result["account_ids"])):
+        raise ValueError("invalid account references")
+    if "request_id" in result and (not isinstance(result["request_id"], str) or
+                                   not re.fullmatch(r"[a-f0-9]{32}", result["request_id"])):
+        raise ValueError("invalid request reference")
+    statuses = {"pending", "created", "exists", "added", "error"}
+    codes = {"operation_failed", "account_required", "owner_required", "create_rejected",
+             "name_conflict", "operation_unconfirmed", "user_disabled", "ssh_disabled",
+             "state_unknown", "key_unavailable", "ssh_add_rejected", "no_active_key"}
+    for key, values in (("status", statuses), ("code", codes), ("reason", codes)):
+        if key in result and (not isinstance(result[key], str) or result[key] not in values):
+            raise ValueError("invalid result category")
+    if "ssh_ready" in result and type(result["ssh_ready"]) is not bool:
+        raise ValueError("invalid readiness state")
+    # Typed ids and fixed categories are safe even if a login happens to equal
+    # a schema key or a numeric id. Raw output still passes through the scrubber.
+    target = stream or sys.stdout
+    while isinstance(target, _Scrubbed):
+        target.flush()
+        target = target._stream
+    target.write(json.dumps(result, separators=(",", ":")) + "\n")
+    target.flush()
+
+
+def save_diagnostic(msg):
+    """Local-only details; failure to write diagnostics must not expose them."""
+    try:
+        directory = os.path.join(CONFIG_DIR, "diagnostics")
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        st = os.stat(directory)
+        if st.st_uid != os.getuid() or st.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+            return
+        path = os.path.join(directory, "last-error.json")
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump({"message": scrub(msg)}, fh, ensure_ascii=False)
+            fh.write("\n")
+    except (OSError, ValueError):
+        pass
+
+
+def die(msg, code=1, error_code="operation_failed"):
+    save_diagnostic(msg)
+    emit({"status": "error", "code": error_code}, stream=sys.stderr)
     sys.exit(code)
 
 
@@ -172,8 +258,8 @@ def name_salt():
 
 
 def hashed_name(acc):
-    """Name for an account that has none: a stable hash of its panel and login.
-    It stands in for the login everywhere — --account, output, file names."""
+    """Opaque account reference: a salted stable hash of its panel and login.
+    Used for agent selection and output, including accounts with local aliases."""
     key = "%s\n%s" % (acc.get("url") or "", acc.get("login") or "")
     return "acc-" + hashlib.sha256(name_salt() + key.encode("utf-8")).hexdigest()[:8]
 
@@ -237,7 +323,7 @@ def load_config():
         # scrub every login and password, not just the used one
         if acc.get("password"):
             SECRETS.append(str(acc["password"]))
-        if acc.get("login") and not is_admin(acc):
+        if acc.get("login"):
             LOGINS.append(str(acc["login"]))
         acc = dict(acc)
         acc["name"] = str(acc.get("name") or "").strip()
@@ -248,7 +334,8 @@ def load_config():
     for i, acc in enumerate(clean):
         if not acc["name"]:
             acc["name"] = hashed_name(acc)
-        if any(login.lower() in acc["name"].lower() for login in LOGINS):
+        if any(str(a.get("login") or "").lower() in acc["name"].lower()
+               for a in clean if a.get("login")):
             die('the "name" of accounts[%d] in %s contains a panel login. Give it another '
                 'name yourself, in your own terminal.' % (i, CONFIG_FILE))
 
@@ -269,11 +356,11 @@ def resolve_account(requested):
 
     if requested:
         for acc in accounts:
-            if requested == acc["name"]:
+            if requested in (acc["name"], hashed_name(acc)):
                 return acc
         die(
             "account %r is not in %s. Known accounts: %s"
-            % (requested, CONFIG_FILE, ", ".join(a["name"] for a in accounts))
+            % (requested, CONFIG_FILE, ", ".join(hashed_name(a) for a in accounts))
         )
     if len(accounts) == 1:
         return accounts[0]
@@ -282,7 +369,7 @@ def resolve_account(requested):
             return acc
     die(
         "several accounts configured, pick one with --account: %s"
-        % ", ".join(a["name"] for a in accounts)
+        % ", ".join(hashed_name(a) for a in accounts), error_code="account_required"
     )
 
 
@@ -308,20 +395,9 @@ def truthy(val):
 
 
 def list_accounts():
-    """Print account names, panels and labels — never logins or passwords."""
+    """Only opaque references leave the process; names, URLs and labels stay local."""
     accounts = load_config()
-    width = max(len(a["name"]) for a in accounts)
-    for acc in accounts:
-        missing = [k for k in ("login", "password") if not acc.get(k)]
-        detail = (
-            "INCOMPLETE (missing %s)" % ", ".join(missing)
-            if missing
-            else acc["url"]
-        )
-        if is_admin(acc):
-            detail += "  [panel administrator]"
-        note = acc.get("label") or ""
-        print("%-*s  %s%s" % (width, acc["name"], detail, ("  — " + note) if note else ""))
+    emit({"account_ids": [hashed_name(a) for a in accounts]})
     return 0
 
 
@@ -368,18 +444,18 @@ class Panel:
         try:
             with self.opener.open(req, timeout=60) as resp:
                 raw = resp.read().decode("utf-8", "replace")
-                return resp.status, (json.loads(raw) if raw.strip() else {})
+                return resp.status, remember_identities(json.loads(raw) if raw.strip() else {})
         except urllib.error.HTTPError as exc:
             try:
                 raw = exc.read().decode("utf-8", "replace")
             except OSError:
                 raw = ""
             try:
-                return exc.code, json.loads(raw)
+                return exc.code, remember_identities(json.loads(raw))
             except ValueError:
                 return exc.code, {"message": raw[:500]}
         except urllib.error.URLError as exc:
-            die("cannot reach %s: %s" % (self.base, scrub(exc.reason)))
+            die("cannot reach the selected panel (network error)")
 
     # -- auth ------------------------------------------------------------
 
@@ -396,7 +472,7 @@ class Panel:
                 % (
                     self.cfg["name"],
                     status,
-                    body.get("message") or "no token in response",
+                    panel_error(body),
                 )
             )
         SECRETS.append(token)
@@ -434,9 +510,11 @@ class Panel:
             self.auth()
         url = self.api + path
         status, data = self._request(method, url, body, self.token)
+        remember_identities(data)
         if status == 401:
             self.auth(force=True)
             status, data = self._request(method, url, body, self.token)
+            remember_identities(data)
         return status, data
 
 
@@ -459,7 +537,7 @@ def jwt_expired(token, skew=60):
 # --------------------------------------------------------------------------
 
 
-def panel_error(data):
+def _raw_panel_error(data):
     """The panel reports failures either as {"message": ...} or as
     {"errors": {"<field>": "<text>"}}."""
     if not isinstance(data, dict):
@@ -477,8 +555,13 @@ def panel_error(data):
     return data.get("message") or json.dumps(data, ensure_ascii=False)[:500]
 
 
+def panel_error(data):
+    """Free-form server errors can name users invisible to this account."""
+    return "request rejected by the panel; inspect details locally in the panel"
+
+
 def says_already_exists(data):
-    text = panel_error(data).lower()
+    text = _raw_panel_error(data).lower()
     return "уже существует" in text or "already exists" in text
 
 
@@ -515,6 +598,7 @@ def own_user_id(panel):
 
     login = own_login(panel)
     status, data = panel.call("GET", "/users")
+    remember_identities(data)
     if status == 200:
         for user in unwrap(data):
             if not isinstance(user, dict):
@@ -536,6 +620,7 @@ def own_user_id(panel):
 def panel_users(panel):
     """GET /api/users — everyone for the administrator, just ourselves otherwise."""
     status, data = panel.call("GET", "/users")
+    remember_identities(data)
     if status != 200:
         die("cannot list panel users (HTTP %s): %s" % (status, panel_error(data)))
     return [u for u in unwrap(data) if isinstance(u, dict)]
@@ -552,34 +637,24 @@ def is_admin_user(user):
 
 
 def user_label(user, names=None):
-    """Login of a panel user, or the account name where the login is one of ours."""
-    if names is None:
-        names = {str(a.get("login") or "").lower(): a["name"] for a in load_config()}
-    login = user_login(user)
-    if login.lower() in names and login.lower() != ADMIN_LOGIN:
-        return "account %s" % names[login.lower()]
-    return login or "?"
+    """The agent's user identifier is always the numeric id."""
+    return "user id %s" % user.get("id", "?")
 
 
 def announce(panel, action, owner_id=None):
-    """Say where this is about to happen before anything is touched: which
-    panel server, under which account, for which panel user."""
-    print("server:  %s" % panel.base)
-    print("account: %s" % panel.cfg["name"])
+    """Minimal pending state; server details and action text stay local."""
+    result = {"status": "pending"}
     if owner_id is not None:
-        who = next((user_label(u) for u in panel_users(panel) if u.get("id") == owner_id), "?")
-        print("owner:   %s (user id %s)" % (who, owner_id))
-    print("action:  %s" % action)
+        result["owner_id"] = owner_id
+    emit(result)
     sys.stdout.flush()
 
 
 def user_lines(panel):
-    """One line per panel user: id and login, or the account name where the
-    login is one of ours — that one is scrubbed and cannot be typed anyway."""
-    names = {str(a.get("login") or "").lower(): a["name"] for a in load_config()}
+    """Only user ids and a fixed role label leave the process."""
     out = []
     for user in sorted(panel_users(panel), key=lambda u: u.get("id") or 0):
-        who = user_label(user, names)
+        who = ""
         if is_admin_user(user):
             who += "  [panel administrator, cannot own anything]"
         out.append("id %-5s %s" % (user.get("id", "?"), who))
@@ -591,7 +666,7 @@ def resolve_owner(panel, requested):
 
     An account that sees only itself owns what it creates, no questions asked.
     One that sees several panel users (the administrator does) must be told who
-    the owner is — by panel login, user id or configured account name. The
+    the owner is — by numeric user id. The
     administrator itself never owns anything.
     """
     account = panel.cfg["name"]
@@ -599,28 +674,20 @@ def resolve_owner(panel, requested):
 
     if not requested:
         if len(users) > 1:
-            print("ERROR: account %s sees several panel users — say who will own this with "
-                  "--owner (login, user id or account name)." % account, file=sys.stderr)
-            print("Ask the user which panel user it is; do not pick one yourself. Panel users:",
-                  file=sys.stderr)
-            for line in user_lines(panel):
-                print("  " + line, file=sys.stderr)
+            emit({"status": "error", "code": "owner_required",
+                  "owner_ids": [u["id"] for u in users if not is_admin_user(u)]}, stream=sys.stderr)
             sys.exit(OWNER_NEEDED)
         found = users[0] if users else {"id": own_user_id(panel)}
     else:
-        wanted = str(requested).strip()
-        for acc in load_config():  # a configured account name stands for its login
-            if wanted == acc["name"] and acc.get("login"):
-                wanted = str(acc["login"])
-                break
+        wanted = user_id_arg(requested)
         found = None
         for user in users:
-            if wanted == user_login(user) or wanted == str(user.get("id")):
+            if wanted == user.get("id"):
                 found = user
                 break
         if not found:
-            die("panel user %r is not among those account %s sees. Panel users:\n  %s"
-                % (requested, account, "\n  ".join(user_lines(panel))))
+            die("user id %s is not visible to account %s. Panel user ids:\n  %s"
+                % (wanted, account, "\n  ".join(user_lines(panel))))
 
     if is_admin_user(found):
         die("nothing may be created under the panel administrator itself — "
@@ -725,10 +792,17 @@ def add_account_arg(parser):
 
 
 def add_owner_arg(parser):
-    parser.add_argument("--owner", metavar="USER",
-                        help="panel user to own it: login, user id or account name; "
+    parser.add_argument("--owner", metavar="USER_ID", type=user_id_arg,
+                        help="numeric panel user id to own it; "
                              "required when the account sees several panel users")
     return parser
+
+
+def user_id_arg(value):
+    text = str(value)
+    if not text.isascii() or not text.isdecimal() or int(text) <= 0:
+        raise argparse.ArgumentTypeError("expected a positive numeric user id")
+    return int(text)
 
 
 def panel_for(args):
@@ -736,6 +810,7 @@ def panel_for(args):
     cfg = read_credentials(getattr(args, "account", None))
     panel = Panel(cfg)
     panel.auth()
+    panel_users(panel)  # register all visible user names before any tool output
     return panel
 
 
@@ -746,4 +821,4 @@ def run(main):
     except KeyboardInterrupt:
         sys.exit(130)
     except Exception as exc:
-        die("%s: %s" % (type(exc).__name__, exc))
+        die("tool failed (%s): %s" % (type(exc).__name__, exc))
