@@ -238,3 +238,39 @@ class PrivacyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UserIdLookupTests(unittest.TestCase):
+    def setUp(self):
+        PrivacyTests.setUp(self)
+        self.stack.enter_context(mock.patch.object(fp, "CACHE_DIR", self.temp.name + "/cache"))
+        self.stack.enter_context(mock.patch.object(fp, "hashed_name", return_value="acc-00000001"))
+        self.stack.enter_context(mock.patch.object(fp, "resolve_account", return_value={"name": "work"}))
+        self.panel = FakeSSHPanel()
+        self.panel.users = [{"id": 93, "username": "HiddenAlpha"},
+                            {"id": 1, "username": "fastpanel", "roles": ["ROLE_ADMIN"]}]
+        self.stack.enter_context(mock.patch.object(fp, "panel_for", return_value=self.panel))
+
+    def lines(self):
+        return [json.loads(line) for line in self.output.getvalue().splitlines()]
+
+    def test_cache_then_lookup_prints_only_ids(self):
+        self.assertEqual(accounts.cmd_users_cache(fp.argparse.Namespace(account="work")), 0)
+        cache = Path(fp.CACHE_DIR) / "users-acc-00000001.json"
+        self.assertEqual(cache.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(json.loads(cache.read_text()), {"hiddenalpha": 93, "fastpanel": 1})
+        self.assertEqual(accounts.cmd_user_id(fp.argparse.Namespace(account="work", name="hiddenALPHA")), 0)
+        for name in ["hiddenalpha", "fastpanel"]:
+            self.assertNotIn(name, self.output.getvalue().lower())
+        self.assertEqual(self.lines(), [{"status": "created", "user_ids": [93, 1]}, {"user_id": 93}])
+
+    def test_lookup_without_cache_or_unknown_login_fails_without_echo(self):
+        with self.assertRaises(SystemExit):
+            accounts.cmd_user_id(fp.argparse.Namespace(account="work", name="hiddenalpha"))
+        accounts.cmd_users_cache(fp.argparse.Namespace(account="work"))
+        with self.assertRaises(SystemExit):
+            accounts.cmd_user_id(fp.argparse.Namespace(account="work", name="hidden_unknown"))
+        out = self.output.getvalue()
+        self.assertNotIn("hidden_unknown", out)
+        self.assertNotIn("hiddenalpha", out.lower())
+        self.assertEqual([l.get("code") for l in self.lines()], ["cache_missing", None, "user_not_found"])

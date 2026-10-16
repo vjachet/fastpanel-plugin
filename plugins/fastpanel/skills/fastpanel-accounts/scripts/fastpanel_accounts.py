@@ -43,6 +43,44 @@ def cmd_users(args):
     return 0
 
 
+def users_cache_path(cfg):
+    return os.path.join(fp.CACHE_DIR, "users-%s.json" % fp.safe_name(fp.hashed_name(cfg)))
+
+
+def cmd_users_cache(args):
+    """Save login -> id of every visible user to a 0600 cache; print ids only."""
+    panel = fp.panel_for(args)
+    users = [u for u in fp.panel_users(panel) if fp.user_login(u) and isinstance(u.get("id"), int)]
+    os.makedirs(fp.CACHE_DIR, mode=0o700, exist_ok=True)
+    fp.check_perms(fp.CACHE_DIR)
+    path = users_cache_path(panel.cfg)
+    fd, tmp = tempfile.mkstemp(prefix=".users-", dir=fp.CACHE_DIR)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump({fp.user_login(u).lower(): u["id"] for u in users}, fh, ensure_ascii=False)
+        fh.write("\n")
+    os.replace(tmp, path)
+    fp.emit({"status": "created", "user_ids": [u["id"] for u in users]})
+    return 0
+
+
+def cmd_user_id(args):
+    """Login -> numeric id from the users-cache; the login never reaches the output."""
+    fp.LOGINS.append(args.name)
+    cfg = fp.resolve_account(args.account)
+    path = users_cache_path(cfg)
+    if not os.path.exists(path):
+        fp.die("no user cache for this account; run users-cache first", error_code="cache_missing")
+    fp.check_perms(path)
+    with open(path, encoding="utf-8") as fh:
+        cache = json.load(fh)
+    fp.LOGINS.extend(cache)
+    uid = cache.get(args.name.strip().lower()) if isinstance(cache, dict) else None
+    if type(uid) is not int:
+        fp.die("login not in the user cache; refresh it with users-cache", error_code="user_not_found")
+    fp.emit({"user_id": uid})
+    return 0
+
+
 def cmd_account_id(args):
     cfg = fp.resolve_account(args.account)
     fp.emit({"account_ids": [fp.hashed_name(cfg)]})
@@ -335,6 +373,17 @@ def main():
                        "(all of them under the panel administrator)")
     fp.add_account_arg(p)
     p.set_defaults(func=cmd_users)
+
+    p = sub.add_parser("users-cache", help="save login -> id of visible users to a local "
+                       "mode 600 cache; print ids only")
+    fp.add_account_arg(p)
+    p.set_defaults(func=cmd_users_cache)
+
+    p = sub.add_parser("user-id", help="numeric id of a panel user by login, from users-cache; "
+                       "the login is never printed")
+    fp.add_account_arg(p)
+    p.add_argument("name", metavar="LOGIN", help="panel login to look up")
+    p.set_defaults(func=cmd_user_id)
 
     p = sub.add_parser("add", help="create an ordinary panel user idempotently; "
                        "save generated credentials to a local mode 600 file")

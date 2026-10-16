@@ -10,6 +10,8 @@ SCRIPT="${CLAUDE_PLUGIN_ROOT}/skills/fastpanel-accounts/scripts/fastpanel_accoun
 python3 "$SCRIPT" list
 python3 "$SCRIPT" whoami [-A ID_АККАУНТА]
 python3 "$SCRIPT" users [-A ID_АККАУНТА]
+python3 "$SCRIPT" users-cache [-A ID_АККАУНТА]
+python3 "$SCRIPT" user-id ЛОГИН [-A ID_АККАУНТА]
 python3 "$SCRIPT" add --request ID_ЗАЯВКИ [-A ID_АККАУНТА] [--quota N] [--wait N]
 python3 "$SCRIPT" ssh-keys ID_ПОЛЬЗОВАТЕЛЯ [-A ID_АККАУНТА]
 python3 "$SCRIPT" ssh-status ID_ПОЛЬЗОВАТЕЛЯ [-A ID_АККАУНТА]
@@ -18,8 +20,9 @@ python3 "$SCRIPT" ssh-add ID_ПОЛЬЗОВАТЕЛЯ --key-file ПУТЬ.pub [-
 
 ## Имена остаются локально
 
-Агент выбирает пользователя только по числовому id. Не проси логин, не передавай его
-в аргументах, вопросах или отчётах. В `-A` передавай только непрозрачный id аккаунта из `list`.
+Агент выбирает пользователя только по числовому id. Не проси логин и не передавай его
+в вопросах или отчётах. Если человек сам назвал логин, получи id через `user-id` (ниже)
+и дальше работай только с id. В `-A` передавай только непрозрачный id аккаунта из `list`.
 Локальные name/label, адрес панели, пути, роли, квоты, отпечатки, комментарии
 и содержимое ключей в ответах этих команд не выдаются.
 
@@ -30,6 +33,8 @@ python3 "$SCRIPT" ssh-add ID_ПОЛЬЗОВАТЕЛЯ --key-file ПУТЬ.pub [-
 | `list` | `account_ids` |
 | `whoami` | `user_id` |
 | `users` | `user_ids`, доступные владельцы `owner_ids` |
+| `users-cache` | `status: "created"`, `user_ids` |
+| `user-id` | `user_id` |
 | `prepare-user` (только человек) | `request_id` |
 | `add`, `ssh-add` | `status`, `user_id` |
 | `ssh-keys` | `user_id`, `key_ids` |
@@ -55,6 +60,22 @@ python3 "$SCRIPT" ssh-add ID_ПОЛЬЗОВАТЕЛЯ --key-file ПУТЬ.pub [-
 Перед изменением назови id аккаунта и id пользователя (для создания — id заявки).
 Подробная диагностика остаётся в локальном защищённом `diagnostics/last-error.json`
 в каталоге конфига. Агент не читает и не пересылает этот файл.
+
+## Id пользователя по логину
+
+Когда человек назвал пользователя логином («под пользователем X»):
+
+```bash
+python3 "$SCRIPT" users-cache -A acc-1a2b3c4d    # логины и id видимых пользователей — в локальный кеш
+python3 "$SCRIPT" user-id X -A acc-1a2b3c4d      # {"user_id": 93}
+```
+
+`users-cache` берёт `GET /api/users` и сохраняет `логин → id` в
+`~/.cache/fastpanel/users-<id аккаунта>.json` (`600`), печатает только id. `user-id` ищет
+логин в этом кеше без учёта регистра и печатает только `user_id`; логины из кеша и
+переданный логин скрываются в выводе. В сеть `user-id` не ходит. Кеша нет — код
+`cache_missing`, логина нет в кеше — `user_not_found`: запусти `users-cache` и повтори.
+Кеш агент не читает. Полученный id передаётся в `--owner` и SSH-команды.
 
 ## Создание пользователя без раскрытия имени
 

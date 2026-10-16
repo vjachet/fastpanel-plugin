@@ -134,7 +134,8 @@ def emit(result, stream=None):
     statuses = {"pending", "created", "exists", "added", "error"}
     codes = {"operation_failed", "account_required", "owner_required", "create_rejected",
              "name_conflict", "operation_unconfirmed", "user_disabled", "ssh_disabled",
-             "state_unknown", "key_unavailable", "ssh_add_rejected", "no_active_key"}
+             "state_unknown", "key_unavailable", "ssh_add_rejected", "no_active_key",
+             "cache_missing", "user_not_found"}
     for key, values in (("status", statuses), ("code", codes), ("reason", codes)):
         if key in result and (not isinstance(result[key], str) or result[key] not in values):
             raise ValueError("invalid result category")

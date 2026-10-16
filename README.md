@@ -62,7 +62,7 @@ Read/Edit/Write/Grep/Glob и shell-команды, которые лезут в 
 и проверки — в [INSTALL.md](INSTALL.md). Сборка архива для передачи:
 
 ```bash
-git archive --format=tar.gz --prefix=fastpanel-plugin/ -o dist/fastpanel-plugin-4.0.0.tar.gz HEAD
+git archive --format=tar.gz --prefix=fastpanel-plugin/ -o dist/fastpanel-plugin-4.1.0.tar.gz HEAD
 ```
 
 ## Настройка доступов
@@ -136,6 +136,8 @@ python3 $P/fastpanel-dns/scripts/fastpanel_dns.py record-add shop.example.com ww
 python3 $P/fastpanel-dns/scripts/fastpanel_dns.py delete old.example.com -A acc-1a2b3c4d --from-provider                  # показать записи и код
 python3 $P/fastpanel-dns/scripts/fastpanel_dns.py delete old.example.com -A acc-1a2b3c4d --from-provider --confirm КОД    # удалить
 python3 $P/fastpanel-accounts/scripts/fastpanel_accounts.py users -A acc-1a2b3c4d
+python3 $P/fastpanel-accounts/scripts/fastpanel_accounts.py users-cache -A acc-1a2b3c4d     # логины и id — в локальный кеш
+python3 $P/fastpanel-accounts/scripts/fastpanel_accounts.py user-id ЛОГИН -A acc-1a2b3c4d   # только id
 python3 $P/fastpanel-sites/scripts/fastpanel_sites.py add new.example.com -A acc-1a2b3c4d --owner 93
 ```
 
