@@ -60,6 +60,7 @@ class SSHKeyTests(unittest.TestCase):
         self.addCleanup(self.stack.close)
         self.stack.enter_context(mock.patch.object(fp, "CONFIG_DIR", self.temp.name))
         self.stack.enter_context(mock.patch.object(fp, "LOGINS", []))
+        self.stack.enter_context(mock.patch.object(fp, "SHOWN", set()))
         self.stack.enter_context(mock.patch.object(fp, "SECRETS", []))
         self.panel_for = self.stack.enter_context(mock.patch.object(fp, "panel_for", return_value=self.panel))
         self.stack.enter_context(mock.patch.object(fp, "load_config", return_value=[

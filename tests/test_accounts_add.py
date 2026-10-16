@@ -57,6 +57,7 @@ class AddUserTests(unittest.TestCase):
         self.stack.enter_context(mock.patch.object(fp, "CONFIG_DIR", self.temp.name))
         self.stack.enter_context(mock.patch.object(fp, "SECRETS", []))
         self.stack.enter_context(mock.patch.object(fp, "LOGINS", []))
+        self.stack.enter_context(mock.patch.object(fp, "SHOWN", set()))
         self.stack.enter_context(mock.patch.object(fp, "panel_for", return_value=self.panel))
         self.output = io.StringIO()
         self.stack.enter_context(contextlib.redirect_stdout(fp._Scrubbed(self.output)))

@@ -44,6 +44,9 @@ CACHE_DIR = os.path.expanduser("~/.cache/fastpanel")
 PAGE = 100  # the panel's own ui pages the list this way
 SECRETS = []  # passwords and tokens: scrubbed from any output, exact match
 LOGINS = []  # panel logins: scrubbed too, in any letter case
+# A handful of logins may be shown; a batch of more than LOGIN_LIMIT is scrubbed as a whole.
+LOGIN_LIMIT = 5
+SHOWN = set()  # logins (lower case) this process has already let out
 
 # Used only internally to recognize the built-in administrator.
 ADMIN_LOGIN = "fastpanel"
@@ -51,17 +54,33 @@ OWNER_NEEDED = 4  # exit code: the account sees several panel users, the owner w
 
 
 def scrub(text):
+    """Secrets always become ***. Logins pass while the process has let out at most
+    LOGIN_LIMIT distinct ones; a text that would go over the limit loses all of them."""
     out = str(text)
     for s in sorted(set(SECRETS), key=len, reverse=True):
         if s:
             out = out.replace(s, "***")
+    marks, found = [], set()
+
+    def mark(key):
+        def repl(m):
+            marks.append(m.group(0))
+            found.add(key)
+            # a placeholder no login can contain, so shorter logins cannot match inside it
+            return "\0" + chr(0xF0000 + len(marks) - 1) + "\0"
+        return repl
+
     for s in sorted(set(LOGINS), key=len, reverse=True):
         if s:
             variants = {s, json.dumps(s, ensure_ascii=True)[1:-1],
                         urllib.parse.quote(s, safe="")}
             for value in sorted(variants, key=len, reverse=True):
-                out = re.sub(re.escape(value), "***", out, flags=re.IGNORECASE)
-    return out
+                out = re.sub(re.escape(value), mark(s.lower()), out, flags=re.IGNORECASE)
+    show = len(SHOWN | found) <= LOGIN_LIMIT
+    if show:
+        SHOWN.update(found)
+    return re.sub("\0([\U000F0000-\U000FFFFD])\0",
+                  lambda m: marks[ord(m.group(1)) - 0xF0000] if show else "***", out)
 
 
 def remember_identities(value):
@@ -80,15 +99,22 @@ def remember_identities(value):
 
 
 class _Scrubbed:
-    """stdout/stderr stand-in: nothing leaves the process unscrubbed."""
+    """stdout/stderr stand-in: nothing leaves the process unscrubbed.
+
+    For a terminal it goes line by line. Otherwise the output is held until flush,
+    so a whole listing is judged at once against the login limit."""
 
     def __init__(self, stream):
         self._stream = stream
         self._pending = ""
+        try:
+            self._lines = stream.isatty()
+        except (AttributeError, ValueError):
+            self._lines = False
 
     def write(self, text):
         self._pending += text
-        while "\n" in self._pending:
+        while self._lines and "\n" in self._pending:
             line, self._pending = self._pending.split("\n", 1)
             self._stream.write(scrub(line) + "\n")
         return len(text)

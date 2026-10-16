@@ -8,6 +8,10 @@ places directly is denied before it runs.
 
 File tools are checked by resolved path. A shell command is only text, so it is
 matched by pattern — that stops the plain cases, not a determined workaround.
+
+One file is open to the agent, and only to the Read tool: diagnostics/last-error.json.
+The scripts write it through the same scrubber as their output: no passwords or
+tokens, at most a handful of logins.
 """
 
 import json
@@ -18,11 +22,16 @@ import sys
 HOME = os.path.expanduser("~")
 
 
-def protected_dirs():
-    dirs = [os.path.join(HOME, ".config", "fastpanel"), os.path.join(HOME, ".cache", "fastpanel")]
+def config_dirs():
+    dirs = [os.path.join(HOME, ".config", "fastpanel")]
     if os.environ.get("FASTPANEL_CONFIG_DIR"):
         dirs.append(os.environ["FASTPANEL_CONFIG_DIR"])
-    return [os.path.realpath(os.path.expanduser(d)) for d in dirs]
+    return [os.path.expanduser(d) for d in dirs]
+
+
+def protected_dirs():
+    dirs = config_dirs() + [os.path.join(HOME, ".cache", "fastpanel")]
+    return [os.path.realpath(d) for d in dirs]
 
 
 def protected_files():
@@ -30,12 +39,25 @@ def protected_files():
     return [os.path.realpath(os.path.expanduser(path))] if path else []
 
 
+def allowed_files():
+    """The diagnostic file itself: not a symlink, in a diagnostics directory that stays
+    inside the config directory."""
+    out = []
+    for d in config_dirs():
+        directory = os.path.realpath(os.path.join(d, "diagnostics"))
+        path = os.path.join(directory, "last-error.json")
+        if inside(directory, os.path.realpath(d)) and not os.path.islink(path):
+            out.append(path)
+    return out
+
+
 def inside(path, parent):
     return path == parent or path.startswith(parent.rstrip(os.sep) + os.sep)
 
 
-def path_hit(raw, cwd, searches=False):
-    """True if the path is a protected one; for a search, also if it contains one."""
+def path_hit(raw, cwd, searches=False, reads=False):
+    """True if the path is a protected one; for a search, also if it contains one.
+    Only a read may open the diagnostic file; Write and Edit stay out of it too."""
     if not raw:
         raw = cwd if searches else ""
     if not raw:
@@ -44,6 +66,8 @@ def path_hit(raw, cwd, searches=False):
     if not os.path.isabs(path):
         path = os.path.join(cwd or os.getcwd(), path)
     path = os.path.realpath(path)
+    if reads and path in allowed_files() and path not in protected_files():
+        return False
     targets = protected_dirs() + protected_files()
     if any(inside(path, t) for t in targets):
         return True
@@ -62,8 +86,8 @@ SHELL_PATTERNS = [
     r"(import|from)\s+fastpanel_api|import_module\(\s*['\"]fastpanel_api|__import__\(\s*['\"]fastpanel_api",
 ]
 
-
 def shell_hit(command):
+    # no exception for the diagnostic file here: a shell can build any path from its name
     text = str(command or "")
     if any(re.search(p, text) for p in SHELL_PATTERNS):
         return True
@@ -89,7 +113,8 @@ def main():
         hit = path_hit(args.get("path"), cwd, searches=True) or shell_hit(args.get("pattern")
                                                                           if tool == "Glob" else "")
     else:
-        hit = path_hit(args.get("file_path") or args.get("notebook_path"), cwd)
+        hit = path_hit(args.get("file_path") or args.get("notebook_path"), cwd,
+                       reads=tool == "Read")
     if not hit:
         return 0
 
@@ -97,7 +122,8 @@ def main():
         "fastpanel: the panel credentials (~/.config/fastpanel) and the token cache "
         "(~/.cache/fastpanel) are off limits to the agent. Use the fastpanel scripts — they "
         "read these files themselves. If the config needs a change, tell the user what to "
-        "change; they edit it in their own terminal."
+        "change; they edit it in their own terminal. Only diagnostics/last-error.json may be "
+        "read, with the Read tool, by its exact path."
     )
     if tool in ("Grep", "Glob"):
         reason += " A search must not cover these directories either: narrow its path."

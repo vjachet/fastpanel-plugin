@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -22,6 +23,9 @@ class PrivacyTests(unittest.TestCase):
         self.stack.enter_context(mock.patch.object(fp, "CONFIG_DIR", self.temp.name))
         self.stack.enter_context(mock.patch.object(fp, "LOGINS", []))
         self.stack.enter_context(mock.patch.object(fp, "SECRETS", []))
+        self.stack.enter_context(mock.patch.object(fp, "SHOWN", set()))
+        # strict mode: these checks are about the scrubbing itself, not the login limit
+        self.stack.enter_context(mock.patch.object(fp, "LOGIN_LIMIT", 0))
         self.output = io.StringIO()
         self.stream = fp._Scrubbed(self.output)
         self.stack.enter_context(contextlib.redirect_stdout(self.stream))
@@ -236,8 +240,53 @@ class PrivacyTests(unittest.TestCase):
                          {"status": "error", "code": "owner_required", "owner_ids": [93]})
 
 
-if __name__ == "__main__":
-    unittest.main()
+class LoginLimitTests(unittest.TestCase):
+    """At most five distinct logins leave one process; a bigger batch loses all of them."""
+
+    def setUp(self):
+        PrivacyTests.setUp(self)
+        self.stack.enter_context(mock.patch.object(fp, "LOGIN_LIMIT", 5))
+        fp.LOGINS.extend(["alpha", "alpha_rs", "beta", "gamma", "delta", "eps", "zeta", "1"])
+
+    def test_up_to_five_logins_are_shown(self):
+        # "1" is a login too: it must not match inside the scrubber's own placeholders
+        print("/var/www/alpha/data alpha_rs beta gamma user 1")
+        self.stream.flush()
+        self.assertEqual(self.output.getvalue(), "/var/www/alpha/data alpha_rs beta gamma user 1\n")
+
+    def test_a_batch_over_five_is_scrubbed_as_a_whole(self):
+        for name in ["alpha", "alpha_rs", "beta", "gamma", "delta", "eps"]:
+            print("user", name)
+        self.stream.flush()
+        self.assertEqual(self.output.getvalue(), "user ***\n" * 6)
+
+    def test_limit_counts_across_flushes(self):
+        print("alpha beta gamma delta eps")
+        self.stream.flush()
+        print("zeta and alpha")
+        self.stream.flush()
+        print("alpha")
+        self.stream.flush()
+        self.assertEqual(self.output.getvalue(), "alpha beta gamma delta eps\n*** and ***\nalpha\n")
+
+    def test_secrets_are_never_shown(self):
+        fp.SECRETS.append("private_token")
+        print("alpha private_token")
+        self.stream.flush()
+        self.assertEqual(self.output.getvalue(), "alpha ***\n")
+
+    def test_diagnostic_keeps_a_few_logins_but_no_secrets(self):
+        fp.SECRETS.append("private_token")
+        with self.assertRaises(SystemExit):
+            fp.die("owner alpha rejected, token private_token")
+        diagnostic = Path(self.temp.name) / "diagnostics/last-error.json"
+        self.assertEqual(json.loads(diagnostic.read_text())["message"],
+                         "owner alpha rejected, token ***")
+
+    def test_held_output_is_written_on_exit(self):
+        out = subprocess.run([sys.executable, str(SCRIPT), "--help"],
+                             capture_output=True, text=True).stdout
+        self.assertIn("usage", out)
 
 
 class UserIdLookupTests(unittest.TestCase):
