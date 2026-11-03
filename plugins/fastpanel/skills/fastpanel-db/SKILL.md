@@ -1,6 +1,6 @@
 ---
 name: fastpanel-db
-description: Databases on a FastPanel/FluxPanel server from a panel user's own account — list them, show the database servers and charsets, and create a database idempotently (only if it does not exist), optionally attached to a site. Use when asked to add, create, check or list a database on a FastPanel server, e.g. "заведи базу на панели", "создай БД для сайта", "список баз", "add a FastPanel database".
+description: Databases on a FastPanel/FluxPanel server from a panel user's own account — list them, show the database servers and charsets, create a database idempotently (only if it does not exist), optionally attached to a site, show one database, attach an existing database to a site, and delete a database after showing it. Use when asked to add, create, check or list a database on a FastPanel server, e.g. "заведи базу на панели", "создай БД для сайта", "список баз", "привяжи базу к сайту", "удали базу", "add a FastPanel database".
 ---
 
 # fastpanel-db — базы данных в FastPanel от имени пользователя панели
@@ -14,6 +14,9 @@ SCRIPT="${CLAUDE_PLUGIN_ROOT}/skills/fastpanel-db/scripts/fastpanel_db.py"
 python3 "$SCRIPT" list [-A ID_АККАУНТА]              # базы, видимые аккаунту
 python3 "$SCRIPT" servers [-A ID_АККАУНТА]           # серверы БД и доступные кодировки
 python3 "$SCRIPT" add ИМЯ --site ДОМЕН [-A ID_АККАУНТА] [--owner КТО] [опции]   # создать базу, если её нет
+python3 "$SCRIPT" show ИМЯ [-A ID_АККАУНТА]           # одна база: id, сервер, владелец, сайт
+python3 "$SCRIPT" attach ИМЯ --site ДОМЕН [--owner USER_ID] [-A ID_АККАУНТА]   # привязать существующую базу к сайту, при необходимости сменив владельца
+python3 "$SCRIPT" delete ИМЯ [--confirm КОД] [-A ID_АККАУНТА]  # удалить базу; без --confirm только показ
 ```
 
 Опции `add`:
@@ -84,6 +87,26 @@ python3 "$SCRIPT" add shop_main -A root --owner 93 --site shop.example.com
 
 Если скрипт запускает человек в терминале, он сам показывает меню: номер варианта,
 пункт «type another name» или сразу введённое имя, `0` — отмена.
+
+## Привязка базы к сайту
+
+`attach ИМЯ --site ДОМЕН` — то же, что смена сайта в форме редактирования базы
+(`PUT /api/databases/<id>` с `{"id", "owner_id", "site": <site id>}`). Сайт должен принадлежать
+владельцу базы, иначе скрипт ничего не меняет. Уже привязана к этому сайту — `unchanged:`, код 0.
+
+Сайт у другого пользователя панели — `--owner USER_ID`: тем же запросом база переходит к
+этому пользователю и привязывается к его сайту (поле `owner_id` формы). Владельца не
+выбирай сам — только названного пользователем.
+Скрипт ждёт, пока панель покажет новую привязку, и печатает `attached:`.
+
+## Удаление базы
+
+`delete ИМЯ` — кнопка «Удалить» базы в панели (`DELETE /api/databases/<id>`). Необратимо: данные
+и пользователи базы стираются. **Перед каждым удалением — показ, это обязательно.** Без `--confirm`
+скрипт ничего не трогает: печатает базу, сервер, владельца, сайт, размер и код подтверждения.
+Покажи вывод пользователю и удаляй только после его ответа — та же команда с `--confirm КОД`.
+Код привязан к базе, владельцу, сайту и серверу; если что-то изменилось — скрипт откажет, покажи
+заново. Согласие «удаляй», данное до показа, не считается.
 
 ## Коды возврата
 

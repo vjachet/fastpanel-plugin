@@ -314,10 +314,49 @@ def wait_for_site(panel, domain, site_id, timeout=180):
            "nginx and log settings were not applied" % (domain, timeout))
 
 
+DOH_SERVERS = (
+    "https://cloudflare-dns.com/dns-query",
+    "https://dns.google/resolve",
+)
+
+
+def doh_addresses(name):
+    """A and AAAA of a name from public DNS-over-HTTPS — what Let's Encrypt sees.
+
+    The local resolver can lie (a VPN or proxy with fake IPs answers with its own
+    addresses), so it is only the fallback. None when no DoH server answered.
+    """
+    import urllib.parse
+    import urllib.request
+    for server in DOH_SERVERS:
+        found, answered = set(), True
+        for rtype in ("A", "AAAA"):
+            url = "%s?%s" % (server, urllib.parse.urlencode({"name": name, "type": rtype}))
+            req = urllib.request.Request(url, headers={"accept": "application/dns-json"})
+            try:
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+            except (OSError, ValueError):
+                answered = False
+                break
+            if data.get("Status") not in (0, 3):  # NOERROR, NXDOMAIN
+                answered = False
+                break
+            want = 1 if rtype == "A" else 28
+            found |= {a.get("data") for a in data.get("Answer") or [] if a.get("type") == want}
+        if answered:
+            return found
+    return None
+
+
 def resolves_to(name, ips):
-    try:
-        found = {a[4][0] for a in socket.getaddrinfo(name, None)}
-    except socket.gaierror:
+    found = doh_addresses(name)
+    if found is None:
+        try:
+            found = {a[4][0] for a in socket.getaddrinfo(name, None)}
+        except socket.gaierror:
+            return False, "does not resolve"
+    if not found:
         return False, "does not resolve"
     if found & set(ips):
         return True, ""
@@ -455,18 +494,61 @@ def put_backend(panel, site, current, change):
     return panel.call("PUT", "/sites/backend/%s" % site["id"], body)
 
 
+def upstream_addresses(backend):
+    return [u.get("address") for u in backend.get("upstreams") or [] if isinstance(u, dict)]
+
+
+def switch_to_proxy(panel, site, current, now, port):
+    """Turn a site into a reverse proxy to http://localhost:PORT (the panel's "backend"
+    form with type reverse_proxy, as add --proxy sends it). The site, its root and
+    its files stay; only the nginx backend changes."""
+    if not 1 <= port <= 65535:
+        fp.die("--proxy takes a port, 1..65535")
+    target = "http://localhost:%d" % port
+    domain, site_id = site.get("domain"), site["id"]
+    if current.get("type") == "reverse_proxy" and upstream_addresses(current) == [target]:
+        print("unchanged: %s already proxies to %s — nothing changed" % (domain, target))
+        return 0
+    status, data = put_backend(panel, site, current, {
+        "type": "reverse_proxy", "handler": None,
+        "upstreams": [{"type": "host", "address": target}]})
+    if status >= 300:
+        fp.die("switching %s to a reverse proxy failed (HTTP %s): %s"
+               % (domain, status, fp.panel_error(data)))
+    deadline = time.time() + 180
+    while True:
+        after = read_backend(panel, site_id)
+        if (after.get("type") == "reverse_proxy" and not after.get("action")
+                and upstream_addresses(after) in ([target], [])):
+            break
+        if time.time() > deadline:
+            fp.die("switch of %s was submitted but not applied within 180s — check the panel"
+                   % domain)
+        time.sleep(3)
+    print("switched: %s (site id %s)" % (domain, site_id))
+    print("backend: reverse proxy to %s (was %s)" % (target, now))
+    return 0
+
+
 def cmd_backend(args):
-    """Switch an existing site's php handler and/or version."""
+    """Switch an existing site's php handler and/or version, or turn it into a reverse proxy."""
     domain = args.domain.strip().lower().rstrip(".")
     panel = fp.panel_for(args)
     site_id = fp.find_site_id(panel, domain)
-    fp.announce(panel, "switch the php backend of site %s" % domain)
+    if args.proxy is not None and (args.handler or args.php):
+        fp.die("--proxy takes no --php or --handler")
+    fp.announce(panel, "switch site %s to a reverse proxy on port %s" % (domain, args.proxy)
+                if args.proxy is not None else "switch the php backend of site %s" % domain)
     site = wait_for_site(panel, domain, site_id)
     current = read_backend(panel, site_id)
     cur_type = current.get("type")
     cur_handler, cur_php = current.get("handler"), str(current.get("handler_version") or "")
-    now = "%s, %s" % (php_label(cur_php), cur_handler) if cur_type == "php" else cur_type
+    now = "%s, %s" % (php_label(cur_php), cur_handler) if cur_type == "php" else (
+        "reverse proxy to %s" % ", ".join(upstream_addresses(current))
+        if cur_type == "reverse_proxy" else cur_type)
     print("now:     %s" % now, file=sys.stderr)
+    if args.proxy is not None:
+        return switch_to_proxy(panel, site, current, now, args.proxy)
 
     versions = php_versions(panel_settings(panel))
     by_version = {v: h for v, h, _ in versions}
@@ -762,11 +844,15 @@ def main():
     fp.add_account_arg(p)
     p.set_defaults(func=cmd_options)
 
-    p = sub.add_parser("backend", help="switch a site's php handler and/or version")
+    p = sub.add_parser("backend", help="switch a site's php handler and/or version, "
+                       "or turn it into a reverse proxy")
     p.add_argument("domain")
     p.add_argument("--handler", help="mpm_itk (apache module) or fcgi (fastcgi); "
                    "php_fpm and cgi too, if the version supports them")
     p.add_argument("--php", metavar="VER", help="php version as the panel lists it: 83, 8.3, 56 ...")
+    p.add_argument("--proxy", type=int, metavar="PORT",
+                   help="turn the site into a reverse proxy to http://localhost:PORT; "
+                        "the site and its files stay")
     p.add_argument("--no-prompt", action="store_true", help="never ask on a terminal")
     fp.add_account_arg(p)
     p.set_defaults(func=cmd_backend)

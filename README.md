@@ -10,8 +10,8 @@ Root не нужен. Для сайтов и баз достаточно обы�
 | Скилл | Что умеет |
 |---|---|
 | `fastpanel-accounts` | какие аккаунты панели настроены; наш user id; список id пользователей; создание обычного пользователя с генерируемым паролем и квотой; список и добавление публичных SSH-ключей пользователю |
-| `fastpanel-sites` | список сайтов с их id; подробности одного сайта; создание сайта (PHP модулем Apache или FastCGI с выбором версии, статика или обратный прокси для Node.js) с выбором IP, сжатия, кеша статики и логов, с сертификатом Let's Encrypt; смена обработчика и версии PHP; довыпуск сертификата, когда DNS готов; что привязано к сайту; удаление сайта (по выбору — с базами, DNS-доменами и их зонами у провайдера, почтой, поддоменами) |
-| `fastpanel-db` | список баз; серверы БД и кодировки; идемпотентное создание базы с пользователем и привязкой к сайту |
+| `fastpanel-sites` | список сайтов с их id; подробности одного сайта; создание сайта (PHP модулем Apache или FastCGI с выбором версии, статика или обратный прокси для Node.js) с выбором IP, сжатия, кеша статики и логов, с сертификатом Let's Encrypt; смена обработчика и версии PHP, перевод сайта на обратный прокси; довыпуск сертификата, когда DNS готов; что привязано к сайту; удаление сайта (по выбору — с базами, DNS-доменами и их зонами у провайдера, почтой, поддоменами) |
+| `fastpanel-db` | список баз; серверы БД и кодировки; идемпотентное создание базы с пользователем и привязкой к сайту; подробности одной базы; привязка базы к сайту (со сменой владельца); удаление базы |
 | `fastpanel-dns` | DNS-аккаунты панели (внешние провайдеры: FASTDNS, Cloudflare); список DNS-доменов и на каком аккаунте каждый; записи домена; идемпотентное добавление DNS-домена на выбранный аккаунт, с сайтом или без; синхронизация записей домена с аккаунтом; добавление записи в домен, изменение её значения и удаление; привязка почты домена к сервису (Google); удаление DNS-домена из панели, по выбору — вместе с зоной у провайдера |
 
 Общее ядро — `plugins/fastpanel/lib/fastpanel_api.py`: конфиг, логин, кеш токена, разбор
@@ -64,7 +64,7 @@ Read/Edit/Write/Grep/Glob и shell-команды, которые лезут в 
 и проверки — в [INSTALL.md](INSTALL.md). Сборка архива для передачи:
 
 ```bash
-git archive --format=tar.gz --prefix=fastpanel-plugin/ -o dist/fastpanel-plugin-4.2.0.tar.gz HEAD
+git archive --format=tar.gz --prefix=fastpanel-plugin/ -o dist/fastpanel-plugin-4.3.0.tar.gz HEAD
 ```
 
 ## Настройка доступов
@@ -121,6 +121,7 @@ python3 $P/fastpanel-sites/scripts/fastpanel_sites.py list -A acc-1a2b3c4d
 python3 $P/fastpanel-sites/scripts/fastpanel_sites.py options -A acc-1a2b3c4d
 python3 $P/fastpanel-sites/scripts/fastpanel_sites.py add shop.example.com -A acc-1a2b3c4d --handler fcgi --php 74
 python3 $P/fastpanel-sites/scripts/fastpanel_sites.py backend shop.example.com -A acc-1a2b3c4d --handler fcgi --php 82
+python3 $P/fastpanel-sites/scripts/fastpanel_sites.py backend app.example.com -A acc-1a2b3c4d --proxy 3000
 python3 $P/fastpanel-sites/scripts/fastpanel_sites.py ssl shop.example.com -A acc-1a2b3c4d
 python3 $P/fastpanel-sites/scripts/fastpanel_sites.py resources old.example.com -A acc-1a2b3c4d
 python3 $P/fastpanel-sites/scripts/fastpanel_sites.py delete old.example.com -A acc-1a2b3c4d --dns-provider                  # показать, что привязано, и код
@@ -128,6 +129,10 @@ python3 $P/fastpanel-sites/scripts/fastpanel_sites.py delete old.example.com -A 
 python3 $P/fastpanel-db/scripts/fastpanel_db.py servers -A acc-1a2b3c4d
 python3 $P/fastpanel-db/scripts/fastpanel_db.py add shop_main -A acc-1a2b3c4d --site shop.example.com
 python3 $P/fastpanel-db/scripts/fastpanel_db.py add analytics -A acc-1a2b3c4d --site shop.example.com --server pg15 --charset cp1251
+python3 $P/fastpanel-db/scripts/fastpanel_db.py show shop_main -A acc-1a2b3c4d
+python3 $P/fastpanel-db/scripts/fastpanel_db.py attach shop_main -A acc-1a2b3c4d --site shop.example.com --owner 93
+python3 $P/fastpanel-db/scripts/fastpanel_db.py delete old_main -A acc-1a2b3c4d                  # показать базу и код
+python3 $P/fastpanel-db/scripts/fastpanel_db.py delete old_main -A acc-1a2b3c4d --confirm КОД    # удалить
 python3 $P/fastpanel-dns/scripts/fastpanel_dns.py accounts -A acc-1a2b3c4d
 python3 $P/fastpanel-dns/scripts/fastpanel_dns.py list -A acc-1a2b3c4d
 python3 $P/fastpanel-dns/scripts/fastpanel_dns.py add shop.example.com -A acc-1a2b3c4d --dns-account fastDNSfree
@@ -184,9 +189,9 @@ SSH-доступ включается отдельно в панели; авто
 
 ## Удаление — только после проверки
 
-`delete` сайта и DNS-домена и `record-delete` записи без `--confirm` ничего не удаляют:
+`delete` сайта, базы и DNS-домена и `record-delete` записи без `--confirm` ничего не удаляют:
 показывают, что привязано (базы, DNS-домены, почта, поддомены; для DNS-домена — его записи;
-для записи — её саму), и печатают код. Удаление —
+для базы — её сервер, владельца и сайт; для записи — её саму), и печатают код. Удаление —
 та же команда с `--confirm КОД`. Код перестаёт подходить, если привязанное или выбранные
 флаги изменились, так что удалить то, что не было показано, нельзя.
 

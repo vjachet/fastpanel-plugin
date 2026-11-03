@@ -5,6 +5,8 @@
 generated database password goes to a 0600 file, never to stdout.
 """
 
+import hashlib
+import json
 import os
 import sys
 import time
@@ -265,6 +267,115 @@ def cmd_add(args):
     return 0
 
 
+def database_or_die(panel, name):
+    db = find_database(panel, name)
+    if not db:
+        fp.die("database %s not found under account %s" % (name, panel.cfg["name"]))
+    return db
+
+
+def db_site(db):
+    """(site id, domain) the database is attached to, or (None, None)."""
+    site = db.get("site") or {}
+    site_id = db.get("site_id") or site.get("id")
+    return (site_id or None), (site.get("domain") or None)
+
+
+def print_database(db):
+    server = db.get("server") or {}
+    site_id, domain = db_site(db)
+    print("database:  %s (id %s)" % (db.get("name"), db.get("id")))
+    print("server:    %s:%s" % (server.get("type", "?"), server_port(server)))
+    print("owner id:  %s" % fp.owner_id_of(db))
+    print("site:      %s" % ("%s (id %s)" % (domain or "?", site_id) if site_id else "—"))
+    print("charset:   %s" % db.get("charset", "?"))
+    if db.get("size") is not None:
+        print("size:      %s bytes" % db.get("size"))
+
+
+def cmd_show(args):
+    panel = fp.panel_for(args)
+    print_database(database_or_die(panel, args.name))
+    return 0
+
+
+def db_delete_code(db):
+    """Ties a real delete to the dry run the user was shown."""
+    site_id, _ = db_site(db)
+    seen = json.dumps([db.get("id"), db.get("name"), fp.owner_id_of(db), site_id,
+                       (db.get("server") or {}).get("id")], sort_keys=True, default=str)
+    return hashlib.sha256(seen.encode()).hexdigest()[:8]
+
+
+def cmd_delete(args):
+    """The "delete" button of a database (DELETE /api/databases/<id>). Not undoable."""
+    panel = fp.panel_for(args)
+    db = database_or_die(panel, args.name)
+    fp.announce(panel, "delete database %s (id %s) with its data and users"
+                % (db.get("name"), db.get("id")), fp.owner_id_of(db))
+    print_database(db)
+    code = db_delete_code(db)
+    if not args.confirm:
+        print("dry run: nothing deleted. Show the lines above to the user; once they agree, "
+              "repeat the same command with --confirm %s" % code)
+        return 0
+    if args.confirm != code:
+        fp.die("--confirm %s does not match: the database changed since the dry run it came "
+               "from. Run without --confirm again, show the output to the user and ask"
+               % args.confirm)
+    status, data = panel.call("DELETE", "/databases/%s" % db["id"])
+    if status >= 300:
+        fp.die("delete of %s failed (HTTP %s): %s" % (args.name, status, fp.panel_error(data)))
+    # Deletion is queued: wait for the database to leave the list.
+    deadline = time.time() + args.wait
+    while time.time() < deadline:
+        if not find_database(panel, args.name):
+            print("deleted: database %s (id %s)" % (args.name, db["id"]))
+            return 0
+        time.sleep(3)
+    fp.die("delete of %s was submitted but it is still listed after %ds — check the panel"
+           % (args.name, args.wait))
+
+
+def cmd_attach(args):
+    """Attach an existing database to a site of the same owner (PUT /api/databases/<id>,
+    as the panel's own edit form sends it)."""
+    panel = fp.panel_for(args)
+    db = database_or_die(panel, args.name)
+    cur_owner = fp.owner_id_of(db)
+    # --owner hands the database to another panel user in the same request:
+    # the panel's edit form has both the owner and the site fields.
+    owner_id = args.owner if args.owner is not None else cur_owner
+    domain = args.site.strip().lower().rstrip(".")
+    site_id = fp.site_of_owner(panel, domain, owner_id)
+    cur_id, cur_domain = db_site(db)
+    if cur_id == site_id and str(owner_id) == str(cur_owner):
+        print("unchanged: database %s is already attached to site %s (id %s)"
+              % (args.name, domain, site_id))
+        return 0
+    fp.announce(panel, "attach database %s (id %s) to site %s (id %s); was: %s"
+                % (args.name, db["id"], domain, site_id,
+                   "%s (id %s)" % (cur_domain or "?", cur_id) if cur_id else "no site")
+                + ("; owner: user id %s -> %s" % (cur_owner, owner_id)
+                   if str(owner_id) != str(cur_owner) else ""), owner_id)
+    # On an existing database the panel's edit form leaves only the owner and the
+    # site editable; the site goes as its numeric id, like in "add".
+    body = {"id": db["id"], "owner_id": owner_id, "site": site_id}
+    status, data = panel.call("PUT", "/databases/%s" % db["id"], body)
+    if status >= 300:
+        fp.die("attach failed (HTTP %s): %s" % (status, fp.panel_error(data)))
+    deadline = time.time() + args.wait
+    while time.time() < deadline:
+        now = find_database(panel, args.name)
+        if now and db_site(now)[0] == site_id and str(fp.owner_id_of(now)) == str(owner_id):
+            print("attached: database %s to site %s (id %s), owner user id %s"
+                  % (args.name, domain, site_id, owner_id))
+            return 0
+        time.sleep(2)
+    fp.die("the panel accepted the change, but database %s still is not attached to %s after "
+           "%ds — check the panel" % (args.name, domain, args.wait))
+
+
 def main():
     ap = fp.argparse.ArgumentParser(description="FastPanel databases of a panel account")
     sub = ap.add_subparsers(dest="cmd")
@@ -292,6 +403,29 @@ def main():
     p.add_argument("--no-prompt", action="store_true",
                    help="never ask interactively; exit with code 3 if the name is taken")
     p.set_defaults(func=cmd_add)
+
+    p = sub.add_parser("show", help="one database: id, server, owner, site")
+    p.add_argument("name", help="database name")
+    fp.add_account_arg(p)
+    p.set_defaults(func=cmd_show)
+
+    p = sub.add_parser("delete", help="delete a database; without --confirm only shows it")
+    p.add_argument("name", help="database name")
+    fp.add_account_arg(p)
+    p.add_argument("--confirm", metavar="CODE",
+                   help="really delete: the code printed by the same command without --confirm")
+    p.add_argument("--wait", type=int, default=120,
+                   help="seconds to wait for the database to disappear (default: 120)")
+    p.set_defaults(func=cmd_delete)
+
+    p = sub.add_parser("attach", help="attach an existing database to a site of the same owner")
+    p.add_argument("name", help="database name")
+    p.add_argument("--site", metavar="DOMAIN", required=True, help="site to attach it to")
+    fp.add_account_arg(p)
+    fp.add_owner_arg(p)
+    p.add_argument("--wait", type=int, default=60,
+                   help="seconds to wait for the panel to show the new site (default: 60)")
+    p.set_defaults(func=cmd_attach)
 
     args = ap.parse_args()
     if not getattr(args, "func", None):
