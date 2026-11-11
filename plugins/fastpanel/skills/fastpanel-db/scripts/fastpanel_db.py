@@ -191,6 +191,20 @@ def cmd_servers(args):
     return 0
 
 
+def existing_db_user_id(panel, server, login):
+    """Id of a database user that already exists on this database server."""
+    status, data = panel.call("GET", "/databases/servers/%s/users" % server["id"])
+    rows = (data or {}).get("data") if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        fp.die("cannot list database users of server %s (HTTP %s): %s"
+               % (server["id"], status, fp.panel_error(data)))
+    for row in rows:
+        if isinstance(row, dict) and row.get("login") == login:
+            return row.get("id")
+    fp.die("database user %s not found on the %s server — drop --existing-user to create a new one"
+           % (login, server.get("type")))
+
+
 def cmd_add(args):
     panel = fp.panel_for(args)
     account = panel.cfg["name"]
@@ -207,19 +221,29 @@ def cmd_add(args):
     # The panel wants the numeric site id, as its own UI sends it. The site is
     # checked before anything is created: same owner as the database, or no go.
     site_id = fp.site_of_owner(panel, args.site.strip().lower().rstrip("."), owner_id)
-    db_user = args.db_user or args.name
-    fp.announce(panel, "create database %s on %s:%s for site %s"
-                % (args.name, server.get("type"), server_port(server), args.site), owner_id)
-    db_pass = fp.gen_password()
-
+    db_user = args.existing_user or args.db_user or args.name
+    db_pass = None
     body = {
         "charset": args.charset,
         "name": args.name,
         "owner_id": owner_id,
         "server_id": server["id"],
-        "user": {"login": db_user, "password": db_pass},
         "site": site_id,
     }
+    if args.existing_user:
+        # Attach the new database to a database user that already exists on this
+        # server (as the panel form "existing user" does): its password stays as
+        # it is, so nothing is generated and no credentials file is written.
+        user_id = existing_db_user_id(panel, server, args.existing_user)
+        body["user_id"] = user_id
+        what = "existing database user %s (id %s)" % (db_user, user_id)
+    else:
+        db_pass = fp.gen_password()
+        body["user"] = {"login": db_user, "password": db_pass}
+        what = "new database user %s" % db_user
+    fp.announce(panel, "create database %s on %s:%s for site %s, %s"
+                % (args.name, server.get("type"), server_port(server), args.site, what),
+                owner_id)
 
     status, data = panel.call("POST", "/databases", body)
     if not (isinstance(data, dict) and (data.get("data") or {}).get("id")):
@@ -259,6 +283,9 @@ def cmd_add(args):
         print("warning: database not visible in the panel after %ss" % args.wait,
               file=sys.stderr)
 
+    if db_pass is None:
+        print("user: existing database user %s, password unchanged" % db_user)
+        return 0
     path = save_db_credentials(
         fp.safe_name(account), args.name, server_host(server, panel.cfg),
         server_port(server), db_user, db_pass, server.get("type"),
@@ -393,6 +420,8 @@ def main():
     fp.add_account_arg(p)
     fp.add_owner_arg(p)
     p.add_argument("--db-user", help="database user login (default: same as the database name)")
+    p.add_argument("--existing-user", metavar="LOGIN",
+                   help="attach to a database user that already exists; its password is kept")
     p.add_argument("--server", default="mysql", choices=("mysql", "pg", "pg15"),
                    help="database server (default: mysql)")
     p.add_argument("--charset", default="utf8mb4", help="database charset (default: utf8mb4)")
