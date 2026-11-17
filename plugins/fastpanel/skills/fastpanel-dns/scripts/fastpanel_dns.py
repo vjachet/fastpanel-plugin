@@ -553,6 +553,50 @@ def cmd_delete(args):
            "check the panel" % (domain, args.wait))
 
 
+def zone_lines(dom, rows):
+    out = ["; %s — DNS domain id %s, %s, exported %s"
+           % (dom.get("name"), dom.get("id"), account_label(dom), time.strftime("%Y-%m-%d %H:%M:%S %z"))]
+    for rec in sorted(rows, key=lambda r: (str(r.get("name", "")), str(r.get("type", "")))):
+        name = str(rec.get("name", "?"))
+        name = name if name.endswith(".") else name + "."
+        prio = rec.get("priority")
+        prio = "%s " % prio if str(rec.get("type", "")).upper() in ("MX", "SRV") and prio not in (None, "") else ""
+        srv = ""
+        if str(rec.get("type", "")).upper() == "SRV":
+            srv = "%s %s " % (rec.get("weight", 0), rec.get("port", 0))
+        out.append("%s\t%s\tIN\t%s\t%s%s%s" % (name, rec.get("ttl", ""), rec.get("type", "?"),
+                                              prio, srv, rec.get("content", "")))
+    return out
+
+
+def cmd_export(args):
+    """Save every DNS domain with all its records: <dir>/<id>.json (as the panel gives
+    them) and <dir>/<id>.zone (readable). Read-only for the panel; names stay in files."""
+    panel = fp.panel_for(args)
+    target = os.path.abspath(os.path.expanduser(args.dir))
+    os.makedirs(target, mode=0o700, exist_ok=True)
+    os.chmod(target, 0o700)
+    total, domains = 0, sorted(dns_domains(panel), key=lambda d: d.get("id") or 0)
+    index = []
+    for dom in domains:
+        rows = dns_records(panel, dom)
+        total += len(rows)
+        base = os.path.join(target, "%s" % dom.get("id"))
+        for path, text in ((base + ".json", json.dumps({"domain": dom, "records": rows},
+                                                       ensure_ascii=False, indent=1, default=str)),
+                           (base + ".zone", "\n".join(zone_lines(dom, rows)))):
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(text + "\n")
+        index.append("%s\t%s\t%s" % (dom.get("id"), dom.get("name"), len(rows)))
+        print("id %-5s records %d" % (dom.get("id"), len(rows)))
+    fd = os.open(os.path.join(target, "index.tsv"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write("id\tdomain\trecords\n" + "\n".join(index) + "\n")
+    print("saved: %d DNS domains, %d records -> %s" % (len(domains), total, target))
+    return 0
+
+
 def main():
     ap = fp.argparse.ArgumentParser(description="FastPanel DNS domains of a panel account")
     sub = ap.add_subparsers(dest="cmd")
@@ -645,6 +689,12 @@ def main():
     p.add_argument("--wait", type=int, default=60,
                    help="seconds to wait for the synchronization to finish (default: 60)")
     p.set_defaults(func=cmd_sync)
+
+    p = sub.add_parser("export", help="save all DNS domains with their records to files "
+                       "(DIR/<id>.json, DIR/<id>.zone, DIR/index.tsv); prints ids and counts only")
+    p.add_argument("dir", metavar="DIR", help="directory for the files (created, mode 700)")
+    fp.add_account_arg(p)
+    p.set_defaults(func=cmd_export)
 
     p = sub.add_parser("delete", help="delete a DNS domain; without --confirm only shows what would go")
     p.add_argument("domain", help="domain name")

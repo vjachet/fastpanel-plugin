@@ -354,6 +354,128 @@ def cmd_ssh_add(args):
         time.sleep(min(2, remaining))
 
 
+def listed(panel, path, what):
+    """A plain GET list; the caller decides what an error means."""
+    status, data = panel.call("GET", path)
+    if status != 200:
+        fp.die("cannot list %s (HTTP %s): %s" % (what, status, fp.panel_error(data)))
+    return [r for r in fp.unwrap(data) if isinstance(r, dict)]
+
+
+def paged(panel, path, what):
+    out, offset = [], 0
+    sep = "&" if "?" in path else "?"
+    while True:
+        page = listed(panel, "%s%soffset=%d&limit=%d" % (path, sep, offset, fp.PAGE), what)
+        out.extend(page)
+        if len(page) < fp.PAGE:
+            return out
+        offset += fp.PAGE
+
+
+def owned_by(rows, uid):
+    return sorted((r for r in rows if fp.owner_id_of(r) == uid), key=lambda r: r.get("id") or 0)
+
+
+def site_attached(panel, site):
+    """GET /api/sites/<id>/resources — what goes with the site in the panel's dialog."""
+    status, data = panel.call("GET", "/sites/%s/resources" % site["id"])
+    if status != 200:
+        fp.die("cannot read the resources of site id %s (HTTP %s): %s"
+               % (site["id"], status, fp.panel_error(data)))
+    res = data.get("data") if isinstance(data, dict) and "data" in data else data
+    return res if isinstance(res, dict) else {"resources": res}
+
+
+def item_name(item):
+    if not isinstance(item, dict):
+        return str(item)
+    for key in ("name", "domain", "login", "address"):
+        if item.get(key):
+            return "%s (id %s)" % (item[key], item.get("id", "?"))
+    return "id %s" % item.get("id", "?")
+
+
+def user_inventory(panel, user):
+    """Everything the panel holds for this user, as far as its lists tell owners."""
+    uid = user["id"]
+    sites = owned_by(fp.all_sites(panel), uid)
+    inv = {
+        "sites": [{"id": s.get("id"), "name": s.get("domain"), "root": s.get("index_dir"),
+                   "attached": site_attached(panel, s)} for s in sites],
+        "databases": [{"id": d.get("id"), "name": d.get("name")}
+                      for d in owned_by(paged(panel, "/databases", "databases"), uid)],
+        "dns_domains": [{"id": d.get("id"), "name": d.get("name")}
+                        for d in owned_by(listed(panel, "/dns/domains", "DNS domains"), uid)],
+        "ssh_keys": [k.get("id") for k in auth_keys(panel, user)],
+    }
+    return inv
+
+
+def print_inventory(user, inv):
+    detail = {k: user.get(k) for k in ("enabled", "ssh_access") if k in user}
+    print("user:            id %s %s" % (user["id"], json.dumps(detail, sort_keys=True) if detail else ""))
+    print("sites:           %s" % (len(inv["sites"]) or "—"))
+    for s in inv["sites"]:
+        print("  %s (id %s)  root %s" % (s["name"], s["id"], s["root"] or "?"))
+        for key in sorted(s["attached"]):
+            val = s["attached"][key]
+            if isinstance(val, list) and val:
+                print("    %-14s %s" % (key + ":", ", ".join(item_name(i) for i in val)))
+    for key in ("databases", "dns_domains"):
+        print("%-16s %s" % (key + ":", ", ".join(item_name(i) for i in inv[key]) or "—"))
+    print("ssh keys:        %s" % (len(inv["ssh_keys"]) or "—"))
+
+
+def user_delete_code(uid, inv):
+    """Ties a real delete to the dry run the user was shown."""
+    seen = json.dumps([uid, inv], sort_keys=True, default=str)
+    return hashlib.sha256(seen.encode()).hexdigest()[:8]
+
+
+def cmd_delete(args):
+    """The "delete" button of a panel user (DELETE /api/users/<id>). Not undoable:
+    the panel removes the user with its home, sites, databases and the rest."""
+    panel = fp.panel_for(args)
+    wanted = args.user
+    users = fp.panel_users(panel)
+    matches = [u for u in users if u.get("id") == wanted]
+    if len(matches) != 1:
+        fp.die("user id %s is not visible to this account; check users" % wanted,
+               error_code="user_not_found")
+    user = matches[0]
+    if fp.is_admin_user(user):
+        fp.die("the panel administrator cannot be deleted")
+    if user["id"] == fp.own_user_id(panel):
+        fp.die("refusing to delete the user this account logs in as")
+    fp.announce(panel, "delete panel user id %s with everything it owns" % wanted, wanted)
+    inv = user_inventory(panel, user)
+    print_inventory(user, inv)
+    print("removed with it: the user, its home directory /var/www/<login> and everything "
+          "the panel holds for it (sites with files, databases, DNS domains, mail, FTP, cron)")
+    code = user_delete_code(wanted, inv)
+    if not args.confirm:
+        print("dry run: nothing deleted. Show the lines above to the user; once they agree, "
+              "repeat the same command with --confirm %s" % code)
+        return 0
+    if args.confirm != code:
+        fp.die("--confirm %s does not match: what the user owns changed since the dry run it "
+               "came from. Run without --confirm again, show the output to the user and ask"
+               % args.confirm)
+    status, data = panel.call("DELETE", "/users/%s" % wanted)
+    if status >= 300:
+        fp.die("delete of user id %s failed (HTTP %s): %s" % (wanted, status, fp.panel_error(data)))
+    # Deletion is queued: wait for the user to leave the list.
+    deadline = time.time() + args.wait
+    while time.time() < deadline:
+        if not any(u.get("id") == wanted for u in fp.panel_users(panel)):
+            print("deleted: panel user id %s" % wanted)
+            return 0
+        time.sleep(3)
+    fp.die("delete of user id %s was submitted but it is still listed after %ds — check the "
+           "panel queue" % (wanted, args.wait), error_code="operation_unconfirmed")
+
+
 def main():
     ap = fp.argparse.ArgumentParser(description="FastPanel accounts configured for this machine")
     sub = ap.add_subparsers(dest="cmd")
@@ -419,6 +541,16 @@ def main():
     p.add_argument("--wait", type=nonnegative_int, default=60,
                    help="seconds to wait for the key to appear (default: 60)")
     p.set_defaults(func=cmd_ssh_add)
+
+    p = sub.add_parser("delete", help="delete a panel user with everything it owns; "
+                       "without --confirm only shows what would go")
+    fp.add_account_arg(p)
+    p.add_argument("user", metavar="USER_ID", type=fp.user_id_arg, help="numeric panel user id")
+    p.add_argument("--confirm", metavar="CODE",
+                   help="really delete: the code printed by the same command without --confirm")
+    p.add_argument("--wait", type=nonnegative_int, default=300,
+                   help="seconds to wait for the user to leave the list (default: 300)")
+    p.set_defaults(func=cmd_delete)
 
     args = ap.parse_args()
     if not getattr(args, "func", None):
