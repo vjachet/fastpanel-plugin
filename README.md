@@ -64,7 +64,7 @@ Read/Edit/Write/Grep/Glob и shell-команды, которые лезут в 
 и проверки — в [INSTALL.md](INSTALL.md). Сборка архива для передачи:
 
 ```bash
-git archive --format=tar.gz --prefix=fastpanel-plugin/ -o dist/fastpanel-plugin-4.4.0.tar.gz HEAD
+git archive --format=tar.gz --prefix=fastpanel-plugin/ -o dist/fastpanel-plugin-4.5.0.tar.gz HEAD
 ```
 
 ## Настройка доступов
@@ -122,6 +122,7 @@ python3 $P/fastpanel-sites/scripts/fastpanel_sites.py options -A acc-1a2b3c4d
 python3 $P/fastpanel-sites/scripts/fastpanel_sites.py add shop.example.com -A acc-1a2b3c4d --handler fcgi --php 74
 python3 $P/fastpanel-sites/scripts/fastpanel_sites.py backend shop.example.com -A acc-1a2b3c4d --handler fcgi --php 82
 python3 $P/fastpanel-sites/scripts/fastpanel_sites.py backend app.example.com -A acc-1a2b3c4d --proxy 3000
+python3 $P/fastpanel-sites/scripts/fastpanel_sites.py proxy-port app.example.com --site-id 190 --from-port 4641 --port 4642 -A acc-1a2b3c4d --check
 python3 $P/fastpanel-sites/scripts/fastpanel_sites.py ssl shop.example.com -A acc-1a2b3c4d
 python3 $P/fastpanel-sites/scripts/fastpanel_sites.py resources old.example.com -A acc-1a2b3c4d
 python3 $P/fastpanel-sites/scripts/fastpanel_sites.py delete old.example.com -A acc-1a2b3c4d --dns-provider                  # показать, что привязано, и код
@@ -228,6 +229,8 @@ DB_PASSWORD=...
 | 3 | имя базы занято другим пользователем панели — нужен выбор пользователя |
 | 4 | аккаунт видит нескольких пользователей панели, владелец (`--owner`) не назван |
 | 5 | DNS-аккаунтов на панели несколько, а `--dns-account` не назван |
+| 10 | `-A` не называет ни один настроенный аккаунт (`account_not_found`) |
+| 11–15 | `proxy-port`: нет доступа, не тот домен, ручной конфиг, не тот upstream, не применилось вовремя — см. SKILL.md fastpanel-sites |
 
 ## Структура
 

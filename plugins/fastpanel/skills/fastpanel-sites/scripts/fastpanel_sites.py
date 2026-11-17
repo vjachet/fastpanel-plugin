@@ -530,6 +530,170 @@ def switch_to_proxy(panel, site, current, now, port):
     return 0
 
 
+# proxy-port exit codes: one per reason, so an operator can tell them apart.
+EXIT_ACCESS_DENIED = 11      # the account cannot open or change the site
+EXIT_DOMAIN_MISMATCH = 12    # the site id belongs to another domain
+EXIT_MANUAL_CONFIG = 13      # the site's nginx config was edited by hand
+EXIT_UPSTREAM_MISMATCH = 14  # no single "host" upstream on --from-port to replace
+EXIT_APPLY_TIMEOUT = 15      # written, but the panel did not report it applied in time
+
+DENIED = (401, 403, 404)
+
+
+def address_port(address):
+    """Port of an upstream address like http://127.0.0.1:4641 or 127.0.0.1:4641."""
+    m = re.match(r"^(?:[a-z][a-z0-9+.-]*://)?(\[[^\]]*\]|[^/:]*)(?::(\d+))?(/.*)?$",
+                 str(address or ""), re.I)
+    return int(m.group(2)) if m and m.group(2) else None
+
+
+def with_port(address, port):
+    m = re.match(r"^((?:[a-z][a-z0-9+.-]*://)?(?:\[[^\]]*\]|[^/:]*)):\d+(/.*)?$",
+                 str(address), re.I)
+    return "%s:%d%s" % (m.group(1), port, m.group(2) or "")
+
+
+def host_upstreams(backend, port):
+    return [u for u in backend.get("upstreams") or []
+            if isinstance(u, dict) and u.get("type") == "host" and address_port(u.get("address")) == port]
+
+
+def manual_config(site, backend):
+    return bool(site.get("manual_changes") or backend.get("manual_changes"))
+
+
+def describe_upstreams(backend):
+    rows = ["%s %s" % (u.get("type"), u.get("address")) for u in backend.get("upstreams") or []
+            if isinstance(u, dict)]
+    return "; ".join(rows) or "—"
+
+
+def proxy_state(panel, site_id):
+    """What the panel reports right now; None fields when it cannot be read."""
+    status, data = panel.call("GET", "/sites/backend/%s" % site_id)
+    backend = data.get("data") if status == 200 and isinstance(data, dict) else None
+    return backend if isinstance(backend, dict) else None
+
+
+def cmd_proxy_port(args):
+    """Move one reverse-proxy upstream of a site from one local port to another.
+    Every other upstream stays as it is. The site is named twice — by domain and by id —
+    and both must agree before anything is written."""
+    domain = args.domain.strip().lower().rstrip(".")
+    for name, port in (("--from-port", args.from_port), ("--port", args.port)):
+        if not 1 <= port <= 65535:
+            fp.die("%s takes a port, 1..65535" % name, code=2)
+    if args.from_port == args.port:
+        fp.die("--from-port and --port are the same", code=2)
+    panel = fp.panel_for(args)
+    account = fp.hashed_name(panel.cfg)
+    site_id = args.site_id
+    print("account: %s" % account)
+    print("site:    id %s, expected domain %s" % (site_id, domain))
+
+    status, data = panel.call("GET", "/sites/%s" % site_id)
+    site = data.get("data") if status == 200 and isinstance(data, dict) else None
+    if status in DENIED or (status == 200 and not isinstance(site, dict)):
+        fp.die("account %s cannot open site id %s (HTTP %s): it is not this account's site, "
+               "or there is no such site" % (account, site_id, status),
+               code=EXIT_ACCESS_DENIED, error_code="access_denied")
+    if not isinstance(site, dict):
+        fp.die("cannot read site id %s (HTTP %s): %s" % (site_id, status, fp.panel_error(data)))
+    if (site.get("domain") or "").lower() != domain:
+        fp.die("site id %s is %s, not %s — nothing changed"
+               % (site_id, site.get("domain"), domain),
+               code=EXIT_DOMAIN_MISMATCH, error_code="domain_mismatch")
+    print("domain:  %s matches site id %s" % (domain, site_id))
+
+    status, data = panel.call("GET", "/sites/backend/%s" % site_id)
+    backend = data.get("data") if status == 200 and isinstance(data, dict) else None
+    if status in DENIED:
+        fp.die("account %s cannot read the backend of site id %s (HTTP %s)"
+               % (account, site_id, status), code=EXIT_ACCESS_DENIED, error_code="access_denied")
+    if not isinstance(backend, dict):
+        fp.die("cannot read the backend of site id %s (HTTP %s): %s"
+               % (site_id, status, fp.panel_error(data)))
+    print("backend: %s; upstreams: %s" % (backend.get("type"), describe_upstreams(backend)))
+    if manual_config(site, backend):
+        fp.die("site %s has hand-edited nginx settings (manual_changes): a write from here "
+               "would replace them — change the port by hand or reset the config in the panel"
+               % domain, code=EXIT_MANUAL_CONFIG, error_code="manual_config")
+    if backend.get("type") != "reverse_proxy":
+        fp.die("site %s is not a reverse proxy (backend %s)" % (domain, backend.get("type")),
+               code=EXIT_UPSTREAM_MISMATCH, error_code="upstream_mismatch")
+    if backend.get("action") or site.get("action"):
+        fp.die("site %s has a panel task in progress; run again when it is done" % domain,
+               code=EXIT_APPLY_TIMEOUT, error_code="apply_timeout")
+
+    old = host_upstreams(backend, args.from_port)
+    new = host_upstreams(backend, args.port)
+    if not old and len(new) == 1:
+        print("unchanged: %s already proxies to %s, no upstream on port %s — nothing to do"
+              % (domain, new[0].get("address"), args.from_port))
+        print("ports:   %s -> %s; applied: yes (already)" % (args.from_port, args.port))
+        return 0
+    if len(old) != 1 or new:
+        fp.die("site %s needs exactly one host upstream on port %s and none on %s; found %d and "
+               "%d (upstreams: %s) — nothing changed" % (domain, args.from_port, args.port,
+                                                        len(old), len(new), describe_upstreams(backend)),
+               code=EXIT_UPSTREAM_MISMATCH, error_code="upstream_mismatch")
+    old_addr = old[0].get("address")
+    new_addr = with_port(old_addr, args.port)
+    upstreams = []
+    for u in backend.get("upstreams") or []:
+        u = dict(u) if isinstance(u, dict) else u
+        if isinstance(u, dict) and u.get("type") == "host" and address_port(u.get("address")) == args.from_port:
+            u["address"] = new_addr
+        upstreams.append(u)
+    expected = [u.get("address") for u in upstreams if isinstance(u, dict)]
+    print("replace: %s -> %s; other upstreams stay" % (old_addr, new_addr))
+    if args.check:
+        print("check:   ok — domain, site id and the one host upstream to replace confirmed; "
+              "nothing written")
+        return 0
+
+    fp.announce(panel, "move site %s from port %s to %s" % (domain, args.from_port, args.port))
+    status, data = put_backend(panel, site, backend, {
+        "type": "reverse_proxy", "handler": None, "upstreams": upstreams})
+    if status in DENIED:
+        fp.die("account %s may not change the backend of site id %s (HTTP %s) — nothing changed"
+               % (account, site_id, status), code=EXIT_ACCESS_DENIED, error_code="access_denied")
+    if status >= 300:
+        fp.die("writing the backend of %s failed (HTTP %s): %s"
+               % (domain, status, fp.panel_error(data)))
+
+    deadline = time.time() + args.wait
+    after = None
+    while True:
+        after = proxy_state(panel, site_id)
+        if (after and after.get("type") == "reverse_proxy" and not after.get("action")
+                and upstream_addresses(after) == expected):
+            break
+        if time.time() > deadline:
+            # Read the real state once more so the operator can decide whether to repeat.
+            after = proxy_state(panel, site_id)
+            if after is None:
+                state = "unreadable"
+            elif upstream_addresses(after) == expected:
+                state = "written, panel task still pending" if after.get("action") else "applied"
+            elif host_upstreams(after, args.from_port):
+                state = "not written: still on port %s" % args.from_port
+            else:
+                state = "unexpected"
+            print("state:   %s; upstreams: %s" % (state, describe_upstreams(after or {})))
+            print("ports:   %s -> %s; applied: no (timeout %ss)" % (args.from_port, args.port, args.wait))
+            fp.die("the panel did not report the change applied within %ss; state: %s. Repeating "
+                   "the same command is safe" % (args.wait, state),
+                   code=EXIT_APPLY_TIMEOUT, error_code="apply_timeout")
+        time.sleep(3)
+    status, data = panel.call("GET", "/sites/%s" % site_id)
+    site_after = data.get("data") if status == 200 and isinstance(data, dict) else {}
+    print("re-read: domain %s, site id %s, upstreams: %s"
+          % ((site_after or {}).get("domain"), site_id, describe_upstreams(after)))
+    print("ports:   %s -> %s; applied: yes" % (args.from_port, args.port))
+    return 0
+
+
 def cmd_backend(args):
     """Switch an existing site's php handler and/or version, or turn it into a reverse proxy."""
     domain = args.domain.strip().lower().rstrip(".")
@@ -856,6 +1020,20 @@ def main():
     p.add_argument("--no-prompt", action="store_true", help="never ask on a terminal")
     fp.add_account_arg(p)
     p.set_defaults(func=cmd_backend)
+
+    p = sub.add_parser("proxy-port", help="move one reverse-proxy upstream of a site from one "
+                       "local port to another; other upstreams stay")
+    p.add_argument("domain", help="main domain of the site; must match --site-id")
+    p.add_argument("--site-id", type=int, required=True, metavar="ID", help="panel site id")
+    p.add_argument("--from-port", type=int, required=True, metavar="PORT",
+                   help="the port the one host upstream to replace uses now")
+    p.add_argument("--port", type=int, required=True, metavar="PORT", help="the new port")
+    p.add_argument("--check", action="store_true",
+                   help="only verify domain, id and the upstream to replace; write nothing")
+    p.add_argument("--wait", type=int, default=180,
+                   help="seconds to wait for the panel to apply the change (default: 180)")
+    fp.add_account_arg(p)
+    p.set_defaults(func=cmd_proxy_port)
 
     p = sub.add_parser("ssl", help="(re)issue let's encrypt for a site once its dns is in place")
     p.add_argument("domain")

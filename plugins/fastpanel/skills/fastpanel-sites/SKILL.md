@@ -1,6 +1,6 @@
 ---
 name: fastpanel-sites
-description: List, inspect, create and delete sites on a FastPanel/FluxPanel account (id, aliases, document root, SSL, ips; new PHP, static or reverse-proxy (node.js) site with backend, php version, ip, gzip, static cache, log settings and a Let's Encrypt certificate; what is attached to a site; deleting a site with or without its databases, DNS domains, mail domains and subdomains). Use when asked what sites are on the panel, "какие сайты на панели", "покажи сайт example.com", "создай сайт", "добавь сайт example.com", "довыпусти сертификат", "перевыпусти SSL", "смени версию PHP", "поменяй обработчик", "удали сайт", "что привязано к сайту", or when a site id or document root is needed for another task.
+description: List, inspect, create and delete sites on a FastPanel/FluxPanel account (id, aliases, document root, SSL, ips; new PHP, static or reverse-proxy (node.js) site with backend, php version, ip, gzip, static cache, log settings and a Let's Encrypt certificate; what is attached to a site; deleting a site with or without its databases, DNS domains, mail domains and subdomains). Use when asked what sites are on the panel, "какие сайты на панели", "покажи сайт example.com", "создай сайт", "добавь сайт example.com", "довыпусти сертификат", "перевыпусти SSL", "смени версию PHP", "поменяй обработчик", "смени порт прокси", "переключи сайт на другой порт", "удали сайт", "что привязано к сайту", or when a site id or document root is needed for another task.
 ---
 
 # fastpanel-sites — сайты аккаунта панели
@@ -14,6 +14,7 @@ python3 "$SCRIPT" options [-A ID_АККАУНТА]           # из чего в�
 python3 "$SCRIPT" add DOMAIN [опции] [-A ID_АККАУНТА] --no-prompt   # создать сайт
 python3 "$SCRIPT" backend DOMAIN --handler H --php V [-A ID_АККАУНТА] --no-prompt  # сменить обработчик/версию PHP
 python3 "$SCRIPT" backend DOMAIN --proxy ПОРТ [-A ID_АККАУНТА]   # сделать сайт обратным прокси на localhost:ПОРТ
+python3 "$SCRIPT" proxy-port DOMAIN --site-id ID --from-port СТАРЫЙ --port НОВЫЙ [--check] [-A ID_АККАУНТА]  # перевести один upstream прокси на другой порт
 python3 "$SCRIPT" ssl DOMAIN [-A ID_АККАУНТА]        # довыпустить сертификат, когда DNS готов
 python3 "$SCRIPT" resources DOMAIN [-A ID_АККАУНТА]  # что привязано к сайту: базы, DNS, почта, поддомены
 python3 "$SCRIPT" delete DOMAIN [что ещё удалить] [--confirm КОД] [-A ID_АККАУНТА]   # удалить сайт
@@ -106,6 +107,33 @@ python3 "$SCRIPT" delete DOMAIN [что ещё удалить] [--confirm КОД
 его корень и файлы остаются — это замена удалению и пересозданию, когда в корне сайта
 лежат данные (например, домашняя папка Confluence). Уже проксирует на этот порт —
 `unchanged:`. Порт спроси у пользователя, сам не угадывай.
+
+## Смена порта у сайта-прокси
+
+`proxy-port DOMAIN --site-id ID --from-port СТАРЫЙ --port НОВЫЙ` меняет порт в одной
+строке upstream типа `host` (`http://127.0.0.1:СТАРЫЙ` → `http://127.0.0.1:НОВЫЙ`);
+остальные upstream, их порядок и поля остаются. Сайт называется дважды — доменом и id, —
+и они должны совпасть (основной домен, не алиас). Сначала всегда `--check`: он ничего не
+пишет и печатает аккаунт, домен, id, текущие upstream и что на что заменится. Запись — та же
+команда без `--check`: скрипт ждёт, пока панель применит (`--wait`, по умолчанию 180 с),
+перечитывает бэкенд и сайт и печатает `ports: СТАРЫЙ -> НОВЫЙ; applied: yes`. Повтор той
+же команды после успеха — `unchanged`, код 0. Откат — поменять порты местами.
+
+Коды выхода и `code` в JSON:
+
+| выход | code | что значит |
+|---|---|---|
+| 0 | — | сделано, проверено или уже было так |
+| 10 | `account_not_found` | `-A` не называет ни один настроенный аккаунт |
+| 11 | `access_denied` | аккаунт не открывает сайт или панель не дала записать |
+| 12 | `domain_mismatch` | у сайта с этим id другой основной домен |
+| 13 | `manual_config` | nginx сайта правлен руками — запись отсюда его затёрла бы |
+| 14 | `upstream_mismatch` | сайт не прокси, или upstream на старом порту не ровно один, или на новом уже есть |
+| 15 | `apply_timeout` | записано, но панель не подтвердила вовремя, или у сайта идёт задача |
+
+После `apply_timeout` скрипт ещё раз читает бэкенд и печатает `state:` — `applied`,
+`written, panel task still pending`, `not written: still on port …` или `unexpected`.
+Повтор той же команды безопасен.
 
 ## Довыпуск сертификата
 

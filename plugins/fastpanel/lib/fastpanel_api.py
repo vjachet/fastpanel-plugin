@@ -51,6 +51,7 @@ SHOWN = set()  # logins (lower case) this process has already let out
 # Used only internally to recognize the built-in administrator.
 ADMIN_LOGIN = "fastpanel"
 OWNER_NEEDED = 4  # exit code: the account sees several panel users, the owner was not named
+EXIT_ACCOUNT_NOT_FOUND = 10  # exit code: --account names no configured account
 
 
 def scrub(text):
@@ -161,7 +162,8 @@ def emit(result, stream=None):
     codes = {"operation_failed", "account_required", "owner_required", "create_rejected",
              "name_conflict", "operation_unconfirmed", "user_disabled", "ssh_disabled",
              "state_unknown", "key_unavailable", "ssh_add_rejected", "no_active_key",
-             "cache_missing", "user_not_found"}
+             "cache_missing", "user_not_found", "account_not_found", "access_denied",
+             "domain_mismatch", "manual_config", "upstream_mismatch", "apply_timeout"}
     for key, values in (("status", statuses), ("code", codes), ("reason", codes)):
         if key in result and (not isinstance(result[key], str) or result[key] not in values):
             raise ValueError("invalid result category")
@@ -387,7 +389,8 @@ def resolve_account(requested):
                 return acc
         die(
             "account %r is not in %s. Known accounts: %s"
-            % (requested, CONFIG_FILE, ", ".join(hashed_name(a) for a in accounts))
+            % (requested, CONFIG_FILE, ", ".join(hashed_name(a) for a in accounts)),
+            code=EXIT_ACCOUNT_NOT_FOUND, error_code="account_not_found"
         )
     if len(accounts) == 1:
         return accounts[0]
