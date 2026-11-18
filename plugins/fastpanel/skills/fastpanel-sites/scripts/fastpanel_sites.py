@@ -89,7 +89,8 @@ def php_versions(settings):
     for item in block.values():
         if not isinstance(item, dict) or not fp.truthy(item.get("status", True)):
             continue
-        version = str(item.get("version") or "").strip()
+        # Newer panels report "83", older builds "8.3"; site backends take "83" on both.
+        version = str(item.get("version") or "").strip().replace(".", "")
         if version:
             out.append((version, list(item.get("types") or []), bool(item.get("default"))))
     return sorted(out, key=lambda v: int(v[0]) if v[0].isdigit() else 0)
