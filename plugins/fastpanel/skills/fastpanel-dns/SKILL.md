@@ -1,6 +1,6 @@
 ---
 name: fastpanel-dns
-description: DNS domains on a FastPanel/FluxPanel server — list the DNS accounts (external providers such as FASTDNS or Cloudflare) set up on the panel, list DNS domains with the account each one sits on, show a domain's records, add a DNS domain idempotently on a chosen DNS account, synchronize a domain's records with its account, point a domain's mail to a mail service such as Google, and delete a DNS domain from the panel with or without its zone at the provider. Use when asked to add a domain to DNS, check or list DNS domains or DNS accounts, sync DNS records or delete a DNS domain on a FastPanel server, e.g. "добавь домен в DNS", "список DNS доменов", "какие DNS аккаунты на панели", "синхронизируй записи домена", "удали DNS-домен".
+description: DNS domains on a FastPanel/FluxPanel server — list the DNS accounts (external providers such as FASTDNS or Cloudflare) set up on the panel, list DNS domains with the account each one sits on, show a domain's records, add a DNS domain idempotently on a chosen DNS account, synchronize a domain's records with its account, point a domain's mail to a mail service such as Google, delete a DNS domain from the panel with or without its zone at the provider, and export all DNS domains with their records to files. Use when asked to add a domain to DNS, check or list DNS domains or DNS accounts, sync DNS records, save DNS before deletions or delete a DNS domain on a FastPanel server, e.g. "добавь домен в DNS", "список DNS доменов", "какие DNS аккаунты на панели", "синхронизируй записи домена", "удали DNS-домен", "сохрани все DNS-записи".
 ---
 
 # fastpanel-dns — DNS-домены в FastPanel
@@ -21,6 +21,7 @@ python3 "$SCRIPT" mailto ДОМЕН СЕРВИС [-A ID_АККАУНТА]   # п
 python3 "$SCRIPT" add ДОМЕН [-A ID_АККАУНТА] [--dns-account КАКОЙ] [опции]   # создать DNS-домен, если его нет
 python3 "$SCRIPT" sync ДОМЕН [-A ID_АККАУНТА]        # синхронизировать записи домена с его DNS-аккаунтом
 python3 "$SCRIPT" delete ДОМЕН [--from-provider] [--confirm КОД] [-A ID_АККАУНТА]   # удалить DNS-домен
+python3 "$SCRIPT" export КАТАЛОГ [-A ID_АККАУНТА]     # сохранить все DNS-домены с записями в файлы
 ```
 
 DNS-аккаунт — это подключённый к панели внешний DNS-провайдер (FASTDNS, Cloudflare,
@@ -167,6 +168,27 @@ DNS-доменов панели. Удаление необратимо. Сайт
 С `--confirm` скрипт ждёт, пока домен исчезнет из списка (`--wait N`, по умолчанию 60 секунд), и
 печатает `deleted:`. Вместе с сайтом DNS-домен удаляет `fastpanel-sites delete --dns` /
 `--dns-provider`.
+
+## Поведение `export`
+
+```bash
+python3 "$SCRIPT" export ~/dns-backup-2026-11-20 -A acc-1a2b3c4d
+```
+
+Сохраняет все DNS-домены аккаунта со всеми записями:
+
+| Файл | Что внутри |
+|---|---|
+| `КАТАЛОГ/<id>.json` | домен и записи, как их отдаёт панель |
+| `КАТАЛОГ/<id>.zone` | читаемый вид зоны: имя, TTL, тип, приоритет, значение |
+| `КАТАЛОГ/index.tsv` | id, домен, число записей |
+
+Каталог создаётся с правами `700`, файлы — `600`; файлы с теми же именами перезаписываются,
+поэтому под каждое сохранение бери новый каталог. В панели ничего не меняет. В выводе — только
+id доменов и число записей.
+
+Запускай перед удалением DNS-доменов, пользователей панели (`fastpanel-accounts delete`) и
+сайтов с `--dns` / `--dns-provider`.
 
 ## Чего инструмент не делает
 

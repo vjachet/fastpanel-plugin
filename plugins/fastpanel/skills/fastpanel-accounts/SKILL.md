@@ -1,6 +1,6 @@
 ---
 name: fastpanel-accounts
-description: Manage FastPanel/FluxPanel accounts and users by numeric user id — list user ids, create an ordinary user from a private local request, check SSH access, list key ids or add a public SSH key. Use for account selection, user creation or SSH access. Never ask for or expose panel usernames.
+description: Manage FastPanel/FluxPanel accounts and users by numeric user id — list user ids, create an ordinary user from a private local request, check SSH access, list key ids or add a public SSH key, delete a user after showing everything it owns. Use for account selection, user creation, SSH access or deleting a panel user. Never ask for or expose panel usernames.
 ---
 
 # fastpanel-accounts — пользователи только по id
@@ -16,6 +16,7 @@ python3 "$SCRIPT" add --request ID_ЗАЯВКИ [-A ID_АККАУНТА] [--quot
 python3 "$SCRIPT" ssh-keys ID_ПОЛЬЗОВАТЕЛЯ [-A ID_АККАУНТА]
 python3 "$SCRIPT" ssh-status ID_ПОЛЬЗОВАТЕЛЯ [-A ID_АККАУНТА]
 python3 "$SCRIPT" ssh-add ID_ПОЛЬЗОВАТЕЛЯ --key-file ПУТЬ.pub [-A ID_АККАУНТА] [--desc ОПИСАНИЕ] [--wait N]
+python3 "$SCRIPT" delete ID_ПОЛЬЗОВАТЕЛЯ [--confirm КОД] [-A ID_АККАУНТА] [--wait N]
 ```
 
 ## Имена остаются локально
@@ -39,6 +40,7 @@ python3 "$SCRIPT" ssh-add ID_ПОЛЬЗОВАТЕЛЯ --key-file ПУТЬ.pub [-
 | `add`, `ssh-add` | `status`, `user_id` |
 | `ssh-keys` | `user_id`, `key_ids` |
 | `ssh-status` | `user_id`, `ssh_ready`; при отказе `reason` |
+| `delete` | без `--confirm`: id, сайты с корнями и привязками, базы, DNS-домены, число SSH-ключей, код; с `--confirm` — `deleted:` и id |
 | Ошибка | `status: "error"`, фиксированный `code` |
 
 Для внешнего отчёта передавай только итог, целевой id и необходимую причину отказа.
@@ -151,3 +153,43 @@ python3 "$SCRIPT" ssh-add 93 -A acc-1a2b3c4d --key-file ~/.ssh/id_ed25519.pub
 код `0` — условия в панели выполнены, `1` — нет/ошибка. Это не попытка SSH-входа.
 Человек узнаёт логин и формирует команду подключения у себя локально. Агент не печатает
 команду с настоящим логином и не подставляет его в SSH-аргументы.
+
+## Удаление пользователя
+
+```bash
+python3 "$SCRIPT" delete 93 -A acc-1a2b3c4d                    # показ, ничего не удаляет
+python3 "$SCRIPT" delete 93 -A acc-1a2b3c4d --confirm КОД      # удаление после ответа человека
+```
+
+`delete USER_ID` — кнопка «Удалить» пользователя в панели (`DELETE /api/users/<id>`).
+**Необратимо:** панель удаляет пользователя с домашним каталогом `/var/www/<логин>` и всем,
+что за ним числится: сайты с файлами, базы, DNS-домены, почта, FTP, cron.
+
+**Перед каждым удалением — показ, это обязательно.** Без `--confirm` скрипт ничего не трогает:
+печатает id, сайты с корнями и привязанными ресурсами (`GET /api/sites/<id>/resources`), базы,
+DNS-домены, число SSH-ключей и код подтверждения. Покажи вывод человеку и удаляй только после
+его ответа — той же командой с `--confirm КОД`. Код привязан к тому, что числится за
+пользователем; изменилось что-то после показа — скрипт откажет, запусти показ заново и снова
+спроси. Согласие, данное до показа, не считается.
+
+Администратора панели и пользователя, под которым вошёл аккаунт, скрипт не удаляет.
+С `--confirm` он ждёт до `--wait` секунд (по умолчанию 300), пока пользователь исчезнет из
+списка. Не исчез — код `operation_unconfirmed`: смотри очередь панели и
+`diagnostics/last-error.json`, удаление вслепую не повторяй.
+
+**До показа проверь вне панели:** живые службы и контейнеры пользователя (systemd, docker),
+SSH-сессии и туннели. Панель их не видит, а удаление домашнего каталога их сломает.
+
+⚠️ **DNS.** DNS-домены пользователя удаляются вместе с ним, и панель может удалить зону у
+DNS-провайдера. Если тот же DNS-аккаунт подключён к другой панели и зона там живая, это снесёт
+рабочие записи. Перед удалением сохрани DNS (`fastpanel-dns export`), живые зоны сначала убери
+только из панели (`fastpanel-dns delete` без `--from-provider`).
+
+Если панель не довела удаление (задача упала, пользователь остался):
+
+| Причина | Что делать на сервере |
+|---|---|
+| «No quota for '<логин>' user» — нет записи в системных квотах | выдать квоту (`setquota -u`), создать файл от имени пользователя, повторить удаление |
+| сайт, настроенный вручную: панель стёрла сертификат, а nginx-конфиг на него ссылается, `nginx -t` падает | положить временную самоподписанную заглушку по тому же пути, повторить удаление, заглушку убрать |
+
+Это делает человек с правами на сервере; плагин сервер не трогает.
